@@ -54,3 +54,5 @@ cmake-build-*/
 *.vcxproj.user
 *.vcxproj.filters
 *.sln.docstates
+
+results.txt

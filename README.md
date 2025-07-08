@@ -223,3 +223,34 @@ The engine can be used with any UCI-compatible chess GUI:
 - Chess Programming Wiki for algorithms and techniques
 - UCI Protocol specification
 - Various open-source chess engines for inspiration
+
+
+src/
+├── engine/               # Pure engine logic
+│   ├── Engine.cpp
+│   ├── Engine.hpp
+│   ├── Search.cpp
+│   ├── Search.hpp
+│   ├── Evaluation.cpp
+│   ├── Evaluation.hpp
+│
+├── board/                # Board representation and rules
+│   ├── Board.cpp
+│   ├── Board.hpp
+│   ├── Move.cpp
+│   ├── Move.hpp
+│   ├── FenUtils.cpp
+│   └── FenUtils.hpp
+│
+├── devtools/             # Developer CLI tools and visualizers
+│   ├── BoardVisualizer.cpp
+│   └── BoardVisualizer.hpp
+│
+├── io/                   # PGN / FEN / UCI parsers (optional later)
+│   ├── PGNReader.cpp
+│   ├── PGNReader.hpp
+│   └── ...
+│
+├── main/                 # Test runners / CLI app
+│   ├── main.cpp          # Entry point (main method)
+│   └── test.cpp          # Dev playground
