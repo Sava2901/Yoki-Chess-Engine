@@ -1,0 +1,111 @@
+{
+    "project": "Yoki Chess Engine - Pure C++ CLI Design",
+    "language": "C++",
+    "build_system": "CMake",
+    "architecture": "Modular CLI Tools",
+    "goal": "Implement a modular C++ chess engine project designed to be invoked via CLI in production web backends. It must include a high-performance engine binary and a move validation binary, both optimized for fast I/O with standard input/output. Everything must be written in C++.",
+  
+    "modules": [
+      {
+        "name": "Engine Binary (UCI-Compatible)",
+        "type": "cli_binary",
+        "target": "yoki-chess-engine",
+        "entry": "src/engine/main.cpp",
+        "description": "Implements the chess engine core logic with UCI (Universal Chess Interface) protocol. Accepts position and go commands via stdin, returns bestmove via stdout.",
+        "features": {
+          "uci_compliance": true,
+          "search_algorithm": "Iterative deepening with alpha-beta pruning",
+          "evaluation": {
+            "material": true,
+            "piece_square_tables": true,
+            "king_safety": true,
+            "mobility": true
+          },
+          "board_representation": "bitboards (preferred) or mailbox 0x88",
+          "parallelism": "optional, future-proofed but not mandatory",
+          "depth_limit": 8,
+          "time_control": "basic per-move timeout",
+          "output_format": "bestmove {move} [ponder {move}]"
+        },
+        "cli_usage": "./yoki-chess-engine",
+        "stdin": "UCI protocol",
+        "stdout": "UCI-compliant bestmove"
+      },
+      {
+        "name": "Move Validator Binary",
+        "type": "cli_binary",
+        "target": "yoki-validator",
+        "entry": "src/validator/main.cpp",
+        "description": "CLI tool to validate whether a move is legal from a given FEN. Outputs true/false.",
+        "input": {
+          "cli_args": true,
+          "example": "./yoki-validator '<FEN>' '<move>'"
+        },
+        "output": {
+          "format": "stdout: true/false",
+          "error_reporting": "stderr: reason if invalid"
+        },
+        "dependencies": [
+          "shared board logic",
+          "move generation module"
+        ]
+      },
+      {
+        "name": "Core Modules",
+        "type": "library",
+        "location": "src/core/",
+        "description": "Shared modules between engine and validator",
+        "structure": {
+          "board": "Board representation, FEN parsing, Zobrist hashing",
+          "movegen": "Legal move generation and pseudo-legal gen",
+          "search": "Alpha-beta, evaluation, move ordering",
+          "uci": "UCI protocol parsing and command dispatch",
+          "utils": "Logging, timers, string parsing, etc."
+        }
+      }
+    ],
+  
+    "build": {
+      "output_dir": "bin/",
+      "targets": [
+        "yoki-chess-engine",
+        "yoki-validator"
+      ],
+      "cmake": {
+        "min_version": "3.15",
+        "structure": {
+          "CMakeLists.txt": "root + per module",
+          "install_targets": true,
+          "warnings_as_errors": true,
+          "debug_symbols": true
+        }
+      }
+    },
+  
+    "design_constraints": {
+      "dependencies": "Only use STL and standard C++. No Boost. No third-party libraries.",
+      "portability": "Should build cleanly on Linux/macOS/WSL",
+      "performance": "CLI tools should initialize and respond under 50ms",
+      "security": "Avoid system(), file I/O, and shell escaping; designed to be sandbox-safe"
+    },
+  
+    "future_extensions": [
+      {
+        "name": "Opening Book (Polyglot)",
+        "note": "Optional module using internal binary book lookup before search"
+      },
+      {
+        "name": "Transposition Table",
+        "note": "Zobrist hashing with replacement scheme for speedup"
+      },
+      {
+        "name": "Pondering",
+        "note": "Optional support for ponder move in engine CLI"
+      },
+      {
+        "name": "Eval Viewer",
+        "note": "Can export search tree as JSON for external tooling"
+      }
+    ]
+  }
+  

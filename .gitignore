@@ -39,3 +39,18 @@
 
 # debug information files
 *.dwo
+
+# IDE files and folders
+# CLion
+.idea/
+cmake-build-*/
+
+# VSCode
+.vscode/
+*.code-workspace
+
+# Visual Studio
+.vs/
+*.vcxproj.user
+*.vcxproj.filters
+*.sln.docstates
