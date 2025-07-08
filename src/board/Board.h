@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include "../board/FENUtils.h"
+#include "Move.h"
 
 class Board {
 public:
@@ -41,6 +42,31 @@ public:
     void set_en_passant_target(const std::string& target) { en_passant_target = target; }
     void set_halfmove_clock(int clock) { halfmove_clock = clock; }
     void set_fullmove_number(int number) { fullmove_number = number; }
+    
+    // Board state for undo functionality
+    struct BoardState {
+        char active_color;
+        std::string castling_rights;
+        std::string en_passant_target;
+        int halfmove_clock;
+        int fullmove_number;
+        char captured_piece;
+        
+        BoardState() : active_color('w'), castling_rights("-"), en_passant_target("-"),
+                      halfmove_clock(0), fullmove_number(1), captured_piece('.') {}
+    };
+    
+    // Move validation and execution
+    bool is_valid_move(const Move& move) const;
+    bool make_move(const Move& move);
+    bool make_move(const Move& move, BoardState& previous_state);
+    void undo_move(const Move& move, const BoardState& previous_state);
+    
+    // Move creation from algebraic notation
+    Move create_move_from_algebraic(const std::string& algebraic) const;
+    
+    // Get current board state for undo
+    BoardState get_board_state() const;
     
 private:
     char board[8][8];  // 8x8 chess board representation

@@ -287,7 +287,6 @@ void MoveGenerator::generate_queen_moves(const Board& board, int rank, int file,
     generate_sliding_moves(board, rank, file, directions, moves);
 }
 
-//TODO: Check if the kings are not able to move next to each other
 void MoveGenerator::generate_king_moves(const Board& board, int rank, int file, MoveList& moves) {
     char piece = board.get_piece(rank, file);
     char active_color = board.get_active_color();
