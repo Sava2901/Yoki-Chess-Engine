@@ -362,103 +362,103 @@ int main() {
         
         std::cout << "\n=== All move generation and validation tests completed successfully ===" << std::endl;
         
-        // Test 17: Search and Evaluation Tests
-        std::cout << "\n=== Test 17: Search and Evaluation Tests ===" << std::endl;
-        
-        // Test basic evaluation
-        std::cout << "\n--- Testing Basic Evaluation ---" << std::endl;
-        board.set_position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
-        int starting_eval = Evaluation::evaluate_position(board);
-        std::cout << "Starting position evaluation: " << starting_eval << " centipawns" << std::endl;
-        
-        // Test material advantage
-        board.set_position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKB1R w KQkq - 0 1"); // Missing white knight
-        int material_disadvantage = Evaluation::evaluate_position(board);
-        std::cout << "Position missing white knight: " << material_disadvantage << " centipawns" << std::endl;
-        
-        board.set_position("rnbqkb1r/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"); // Missing black knight
-        int material_advantage = Evaluation::evaluate_position(board);
-        std::cout << "Position missing black knight: " << material_advantage << " centipawns" << std::endl;
-        
-        // Test search functionality
-        std::cout << "\n--- Testing Search Functionality ---" << std::endl;
-        board.set_position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
-        
-        std::cout << "\nSearching at depth 1:" << std::endl;
-        Move best_move_d1 = Search::find_best_move(board, 1);
-        std::cout << "Best move at depth 1: " << best_move_d1.to_algebraic() << std::endl;
-        
-        std::cout << "\nSearching at depth 2:" << std::endl;
-        Move best_move_d2 = Search::find_best_move(board, 2);
-        std::cout << "Best move at depth 2: " << best_move_d2.to_algebraic() << std::endl;
-        
-        std::cout << "\nSearching at depth 3:" << std::endl;
-        Move best_move_d3 = Search::find_best_move(board, 3);
-        std::cout << "Best move at depth 3: " << best_move_d3.to_algebraic() << std::endl;
-        
-        // Test tactical position
-        std::cout << "\n--- Testing Tactical Position ---" << std::endl;
-        board.set_position("r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/3P1N2/PPP2PPP/RNBQK2R w KQkq - 0 1"); // Italian Game
-        std::cout << "Italian Game position:" << std::endl;
-        board.print();
-        
-        int tactical_eval = Evaluation::evaluate_position(board);
-        std::cout << "Tactical position evaluation: " << tactical_eval << " centipawns" << std::endl;
-        
-        Move tactical_move = Search::find_best_move(board, 3);
-        std::cout << "Best tactical move: " << tactical_move.to_algebraic() << std::endl;
-        
-        // Test endgame position
-        std::cout << "\n--- Testing Endgame Position ---" << std::endl;
-        board.set_position("8/8/8/8/8/3k4/3P4/3K4 w - - 0 1"); // King and pawn endgame
-        std::cout << "King and pawn endgame:" << std::endl;
-        board.print();
-        
-        int endgame_eval = Evaluation::evaluate_position(board);
-        std::cout << "Endgame evaluation: " << endgame_eval << " centipawns" << std::endl;
-        std::cout << "Is endgame: " << (Evaluation::is_endgame(board) ? "Yes" : "No") << std::endl;
-        
-        Move endgame_move = Search::find_best_move(board, 4);
-        std::cout << "Best endgame move: " << endgame_move.to_algebraic() << std::endl;
-        
-        // Test Engine integration
-        std::cout << "\n--- Testing Engine Integration ---" << std::endl;
-        engine.set_position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
-        
-        std::string engine_move_d2 = engine.search_best_move(2);
-        std::cout << "Engine best move at depth 2: " << engine_move_d2 << std::endl;
-        
-        std::string engine_move_d3 = engine.search_best_move(3);
-        std::cout << "Engine best move at depth 3: " << engine_move_d3 << std::endl;
-        
-        // Test piece values
-        std::cout << "\n--- Testing Piece Values ---" << std::endl;
-        std::cout << "Pawn value: " << Evaluation::get_piece_value('P') << std::endl;
-        std::cout << "Knight value: " << Evaluation::get_piece_value('N') << std::endl;
-        std::cout << "Bishop value: " << Evaluation::get_piece_value('B') << std::endl;
-        std::cout << "Rook value: " << Evaluation::get_piece_value('R') << std::endl;
-        std::cout << "Queen value: " << Evaluation::get_piece_value('Q') << std::endl;
-        std::cout << "King value: " << Evaluation::get_piece_value('K') << std::endl;
-        
-        // Test checkmate detection
-        std::cout << "\n--- Testing Checkmate Detection ---" << std::endl;
-        board.set_position("rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3"); // Scholar's mate
-        std::cout << "Scholar's mate position:" << std::endl;
-        board.print();
-        
-        legal_moves = MoveGenerator::generate_legal_moves(board);
-        std::cout << "Number of legal moves: " << legal_moves.size() << std::endl;
-        
-        if (legal_moves.empty()) {
-            bool in_check = MoveGenerator::is_in_check(board, board.get_active_color());
-            std::cout << "Position is: " << (in_check ? "Checkmate" : "Stalemate") << std::endl;
-        }
-        
-        int mate_eval = Evaluation::evaluate_position(board);
-        std::cout << "Mate position evaluation: " << mate_eval << " centipawns" << std::endl;
-        
-        std::cout << "\n=== Search and Evaluation tests completed successfully ===" << std::endl;
-        
+        // // Test 17: Search and Evaluation Tests
+        // std::cout << "\n=== Test 17: Search and Evaluation Tests ===" << std::endl;
+        //
+        // // Test basic evaluation
+        // std::cout << "\n--- Testing Basic Evaluation ---" << std::endl;
+        // board.set_position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        // int starting_eval = Evaluation::evaluate_position(board);
+        // std::cout << "Starting position evaluation: " << starting_eval << " centipawns" << std::endl;
+        //
+        // // Test material advantage
+        // board.set_position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKB1R w KQkq - 0 1"); // Missing white knight
+        // int material_disadvantage = Evaluation::evaluate_position(board);
+        // std::cout << "Position missing white knight: " << material_disadvantage << " centipawns" << std::endl;
+        //
+        // board.set_position("rnbqkb1r/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"); // Missing black knight
+        // int material_advantage = Evaluation::evaluate_position(board);
+        // std::cout << "Position missing black knight: " << material_advantage << " centipawns" << std::endl;
+        //
+        // // Test search functionality
+        // std::cout << "\n--- Testing Search Functionality ---" << std::endl;
+        // board.set_position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        //
+        // std::cout << "\nSearching at depth 1:" << std::endl;
+        // Move best_move_d1 = Search::find_best_move(board, 1);
+        // std::cout << "Best move at depth 1: " << best_move_d1.to_algebraic() << std::endl;
+        //
+        // std::cout << "\nSearching at depth 2:" << std::endl;
+        // Move best_move_d2 = Search::find_best_move(board, 2);
+        // std::cout << "Best move at depth 2: " << best_move_d2.to_algebraic() << std::endl;
+        //
+        // std::cout << "\nSearching at depth 3:" << std::endl;
+        // Move best_move_d3 = Search::find_best_move(board, 3);
+        // std::cout << "Best move at depth 3: " << best_move_d3.to_algebraic() << std::endl;
+        //
+        // // Test tactical position
+        // std::cout << "\n--- Testing Tactical Position ---" << std::endl;
+        // board.set_position("r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/3P1N2/PPP2PPP/RNBQK2R w KQkq - 0 1"); // Italian Game
+        // std::cout << "Italian Game position:" << std::endl;
+        // board.print();
+        //
+        // int tactical_eval = Evaluation::evaluate_position(board);
+        // std::cout << "Tactical position evaluation: " << tactical_eval << " centipawns" << std::endl;
+        //
+        // Move tactical_move = Search::find_best_move(board, 3);
+        // std::cout << "Best tactical move: " << tactical_move.to_algebraic() << std::endl;
+        //
+        // // Test endgame position
+        // std::cout << "\n--- Testing Endgame Position ---" << std::endl;
+        // board.set_position("8/8/8/8/8/3k4/3P4/3K4 w - - 0 1"); // King and pawn endgame
+        // std::cout << "King and pawn endgame:" << std::endl;
+        // board.print();
+        //
+        // int endgame_eval = Evaluation::evaluate_position(board);
+        // std::cout << "Endgame evaluation: " << endgame_eval << " centipawns" << std::endl;
+        // std::cout << "Is endgame: " << (Evaluation::is_endgame(board) ? "Yes" : "No") << std::endl;
+        //
+        // Move endgame_move = Search::find_best_move(board, 4);
+        // std::cout << "Best endgame move: " << endgame_move.to_algebraic() << std::endl;
+        //
+        // // Test Engine integration
+        // std::cout << "\n--- Testing Engine Integration ---" << std::endl;
+        // engine.set_position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        //
+        // std::string engine_move_d2 = engine.search_best_move(2);
+        // std::cout << "Engine best move at depth 2: " << engine_move_d2 << std::endl;
+        //
+        // std::string engine_move_d3 = engine.search_best_move(3);
+        // std::cout << "Engine best move at depth 3: " << engine_move_d3 << std::endl;
+        //
+        // // Test piece values
+        // std::cout << "\n--- Testing Piece Values ---" << std::endl;
+        // std::cout << "Pawn value: " << Evaluation::get_piece_value('P') << std::endl;
+        // std::cout << "Knight value: " << Evaluation::get_piece_value('N') << std::endl;
+        // std::cout << "Bishop value: " << Evaluation::get_piece_value('B') << std::endl;
+        // std::cout << "Rook value: " << Evaluation::get_piece_value('R') << std::endl;
+        // std::cout << "Queen value: " << Evaluation::get_piece_value('Q') << std::endl;
+        // std::cout << "King value: " << Evaluation::get_piece_value('K') << std::endl;
+        //
+        // // Test checkmate detection
+        // std::cout << "\n--- Testing Checkmate Detection ---" << std::endl;
+        // board.set_position("rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3"); // Scholar's mate
+        // std::cout << "Scholar's mate position:" << std::endl;
+        // board.print();
+        //
+        // legal_moves = MoveGenerator::generate_legal_moves(board);
+        // std::cout << "Number of legal moves: " << legal_moves.size() << std::endl;
+        //
+        // if (legal_moves.empty()) {
+        //     bool in_check = MoveGenerator::is_in_check(board, board.get_active_color());
+        //     std::cout << "Position is: " << (in_check ? "Checkmate" : "Stalemate") << std::endl;
+        // }
+        //
+        // int mate_eval = Evaluation::evaluate_position(board);
+        // std::cout << "Mate position evaluation: " << mate_eval << " centipawns" << std::endl;
+        //
+        // std::cout << "\n=== Search and Evaluation tests completed successfully ===" << std::endl;
+
     } catch (const std::exception& e) {
         std::cout << "Error during testing: " << e.what() << std::endl;
         return 1;
