@@ -1,4 +1,5 @@
 #include "Engine.h"
+#include "Search.h"
 #include <iostream>
 
 Engine::Engine() {
@@ -23,10 +24,15 @@ std::string Engine::search_best_move(int depth) {
     std::cout << "Searching for best move at depth " << depth << std::endl;
     std::cout << "Current position: " << current_position << std::endl;
     
-    // Simple placeholder implementation - returns a common opening move
-    // This will be replaced with actual search algorithm later
-    std::string best_move = "e2e4";
+    // Use the search algorithm to find the best move
+    Move best_move = Search::find_best_move(board, depth);
     
-    std::cout << "Best move found: " << best_move << std::endl;
-    return best_move;
+    if (best_move.piece == '.') {
+        std::cout << "No valid move found!" << std::endl;
+        return "";
+    }
+    
+    std::string move_string = best_move.to_algebraic();
+    std::cout << "Best move found: " << move_string << std::endl;
+    return move_string;
 }

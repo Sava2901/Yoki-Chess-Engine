@@ -12,6 +12,10 @@ include_directories(src)
 add_library(engine
     src/engine/Engine.cpp
     src/engine/Engine.h
+    src/engine/Search.cpp
+    src/engine/Search.h
+    src/engine/Evaluation.cpp
+    src/engine/Evaluation.h
     src/board/Board.cpp
     src/board/Board.h
     src/board/FENUtils.cpp
