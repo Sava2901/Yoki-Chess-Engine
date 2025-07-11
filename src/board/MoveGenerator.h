@@ -46,6 +46,9 @@ public:
     // Check if the current player's king is in check
     static bool is_in_check(const Board& board, char color);
     
+    // Check if the king at the given position is in check
+    static bool is_in_check(const Board& board, char color, const std::pair<int, int>& king_pos);
+    
     // Check if a square is under attack by the opponent
     static bool is_square_attacked(const Board& board, int rank, int file, char attacking_color);
     

@@ -167,6 +167,12 @@ bool MoveGenerator::is_in_check(const Board& board, char color) {
     return is_square_attacked(board, king_pos.first, king_pos.second, opponent_color);
 }
 
+bool MoveGenerator::is_in_check(const Board& board, char color, const std::pair<int, int>& king_pos) {
+    // Check if the king's square is under attack
+    char opponent_color = (color == 'w') ? 'b' : 'w';
+    return is_square_attacked(board, king_pos.first, king_pos.second, opponent_color);
+}
+
 bool MoveGenerator::is_square_attacked(const Board& board, int rank, int file, char attacking_color) {
     // Check for pawn attacks
     int pawn_direction = (attacking_color == 'w') ? -1 : 1;

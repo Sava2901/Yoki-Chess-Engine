@@ -228,6 +228,7 @@ void Board::set_en_passant_target(std::string_view target) {
 }
 
 bool Board::is_legal_move(const Move& move) {
+    // TODO: (Improvements to make) Separate the list of legal moves into separate arrays for each piece
     std::vector<Move> legal_moves = MoveGenerator::generate_legal_moves(*this);
     return std::any_of(legal_moves.begin(), legal_moves.end(), [&](const Move& m) {
         return m == move;
@@ -294,42 +295,20 @@ Move Board::create_move_from_algebraic(std::string_view algebraic) const {
 
 // Make a move on the board
 bool Board::make_move(const Move& move) {
-    // Save everything needed for undo
-    MoveUndoData undo_data;
-    undo_data.active_color = active_color;
-    undo_data.castling_rights_bits = castling_rights_bits;
-    undo_data.en_passant_file = en_passant_file;
-    undo_data.halfmove_clock = halfmove_clock;
-    undo_data.fullmove_number = fullmove_number;
-    undo_data.move = move;
-    undo_data.was_castling = move.is_castling;
-    undo_data.was_en_passant = move.is_en_passant;
-    undo_data.promotion_piece = move.promotion_piece;
-    
-    // Store captured piece
-    if (move.is_en_passant) {
-        int captured_rank = (active_color == 'w') ? move.to_rank + 1 : move.to_rank - 1;
-        undo_data.captured_piece = get_piece(captured_rank, move.to_file);
-    } else {
-        undo_data.captured_piece = get_piece(move.to_rank, move.to_file);
+    if (!is_legal_move(move)) {
+        return false;
     }
-    
-    // Apply the move (including castling, en passant, etc.)
     apply_move(move);
-    
-    // Check if move is legal (king not in check)
-    bool legal = !MoveGenerator::is_in_check(*this, (undo_data.active_color == 'w') ? 'b' : 'w');
-    
-    if (!legal) {
-        // Restore board state
-        undo_move(undo_data);
-    }
-    
-    return legal;
+
+    return true;
 }
 
 // New make_move function with MoveUndoData
 bool Board::make_move(const Move& move, MoveUndoData& undo_data) {
+    if (!is_legal_move(move)) {
+        return false;
+    }
+
     // Save everything needed for undo
     undo_data.active_color = active_color;
     undo_data.castling_rights_bits = castling_rights_bits;
@@ -349,18 +328,7 @@ bool Board::make_move(const Move& move, MoveUndoData& undo_data) {
         undo_data.captured_piece = get_piece(move.to_rank, move.to_file);
     }
     
-    // Apply the move (including castling, en passant, etc.)
     apply_move(move);
-
-    // TODO: this does not have to check for checks in every move, filter them before checking.
-    // Check if move is legal (king not in check)
-    bool legal = !MoveGenerator::is_in_check(*this, (undo_data.active_color == 'w') ? 'b' : 'w');
-    
-    if (!legal) {
-        // Restore board state
-        undo_move(undo_data);
-        return false;
-    }
     
     return true;
 }
