@@ -1,4 +1,5 @@
 #include "FENUtils.h"
+#include "Board.h"
 #include <iostream>
 #include <sstream>
 #include <cctype>
@@ -186,12 +187,45 @@ bool FENUtils::validate_number(const std::string& num) {
 }
 
 std::string FENUtils::create_fen(const FENComponents& components) {
-    return components.piece_placement + " " +
-           components.active_color + " " +
-           components.castling_rights + " " +
-           components.en_passant_target + " " +
-           std::to_string(components.halfmove_clock) + " " +
-           std::to_string(components.fullmove_number);
+    // Use string concatenation with reserve for better performance
+    std::string fen;
+    fen.reserve(components.piece_placement.length() + components.castling_rights.length() + components.en_passant_target.length() + 20);
+    
+    fen += components.piece_placement;
+    fen += ' ';
+    fen += components.active_color;
+    fen += ' ';
+    fen += components.castling_rights;
+    fen += ' ';
+    fen += components.en_passant_target;
+    fen += ' ';
+    fen += std::to_string(components.halfmove_clock);
+    fen += ' ';
+    fen += std::to_string(components.fullmove_number);
+    
+    return fen;
+}
+
+std::string FENUtils::create_fen(const std::string& piece_placement, char active_color, 
+                                const std::string& castling_rights, const std::string& en_passant_target, 
+                                int halfmove_clock, int fullmove_number) {
+    // Use string concatenation with reserve for better performance
+    std::string fen;
+    fen.reserve(piece_placement.length() + castling_rights.length() + en_passant_target.length() + 20);
+    
+    fen += piece_placement;
+    fen += ' ';
+    fen += active_color;
+    fen += ' ';
+    fen += castling_rights;
+    fen += ' ';
+    fen += en_passant_target;
+    fen += ' ';
+    fen += std::to_string(halfmove_clock);
+    fen += ' ';
+    fen += std::to_string(fullmove_number);
+    
+    return fen;
 }
 
 std::vector<std::string> FENUtils::split_fen(const std::string& fen) {

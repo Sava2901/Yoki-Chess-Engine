@@ -4,6 +4,33 @@
 #include "Move.h"
 #include "Board.h"
 #include <vector>
+#include <array>
+
+// Precomputed move directions for better performance
+static constexpr std::array<std::pair<int, int>, 8> KNIGHT_MOVES = {{
+    {-2, -1}, {-2, 1}, {-1, -2}, {-1, 2},
+    {1, -2}, {1, 2}, {2, -1}, {2, 1}
+}};
+
+static constexpr std::array<std::pair<int, int>, 8> KING_MOVES = {{
+    {-1, -1}, {-1, 0}, {-1, 1},
+    {0, -1},           {0, 1},
+    {1, -1},  {1, 0},  {1, 1}
+}};
+
+static constexpr std::array<std::pair<int, int>, 4> ROOK_DIRECTIONS = {{
+    {-1, 0}, {1, 0}, {0, -1}, {0, 1}
+}};
+
+static constexpr std::array<std::pair<int, int>, 4> BISHOP_DIRECTIONS = {{
+    {-1, -1}, {-1, 1}, {1, -1}, {1, 1}
+}};
+
+static constexpr std::array<std::pair<int, int>, 8> QUEEN_DIRECTIONS = {{
+    {-1, -1}, {-1, 0}, {-1, 1},
+    {0, -1},           {0, 1},
+    {1, -1},  {1, 0},  {1, 1}
+}};
 
 class MoveGenerator {
 public:
@@ -34,22 +61,31 @@ private:
     // Generate castling moves
     static void generate_castling_moves(const Board& board, MoveList& moves);
     
-    // Generate en passant moves
-    static void generate_en_passant_moves(const Board& board, MoveList& moves);
+
     
-    // Helper functions for sliding pieces (rook, bishop, queen)
+    // Optimized helper functions for sliding pieces
+    template<size_t N>
     static void generate_sliding_moves(const Board& board, int rank, int file, 
-                                     const std::vector<std::pair<int, int>>& directions, 
+                                     const std::array<std::pair<int, int>, N>& directions, 
                                      MoveList& moves);
     
-    // Helper function to check if a piece belongs to the current player
-    static bool is_own_piece(char piece, char active_color);
+    // Optimized helper functions (inline for better performance)
+    static bool is_own_piece(char piece, char active_color) {
+        return piece != '.' && get_piece_color(piece) == active_color;
+    }
     
-    // Helper function to check if a piece belongs to the opponent
-    static bool is_opponent_piece(char piece, char active_color);
+    static bool is_opponent_piece(char piece, char active_color) {
+        return piece != '.' && get_piece_color(piece) != active_color;
+    }
     
-    // Helper function to get piece color
-    static char get_piece_color(char piece);
+    static char get_piece_color(char piece) {
+        return std::isupper(piece) ? 'w' : 'b';
+    }
+    
+    // Fast square validation
+    static bool is_valid_square(int rank, int file) {
+        return (rank | file) >= 0 && (rank | file) < 8;
+    }
     
     // Helper function to find the king position
     static std::pair<int, int> find_king_position(const Board& board, char color);

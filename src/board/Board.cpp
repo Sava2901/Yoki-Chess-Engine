@@ -1,9 +1,9 @@
 #include "Board.h"
 #include "MoveGenerator.h"
+#include "FENUtils.h"
 #include <iostream>
 #include <sstream>
 #include <cctype>
-#include <algorithm>
 #include <cmath>
 
 Board::Board() {
@@ -17,8 +17,8 @@ Board::~Board() {
 void Board::clear() {
     initialize_empty_board();
     active_color = 'w';
-    castling_rights = "-";
-    en_passant_target = "-";
+    castling_rights_bits = NO_CASTLING;
+    en_passant_file = -1;
     halfmove_clock = 0;
     fullmove_number = 1;
 }
@@ -57,10 +57,10 @@ void Board::set_position(const std::string& fen) {
         // Set board position
         set_from_fen(components.piece_placement);
         
-        // Set game state
+        // Set game state (optimized)
         active_color = components.active_color;
-        castling_rights = components.castling_rights;
-        en_passant_target = components.en_passant_target;
+        set_castling_rights(components.castling_rights);
+        set_en_passant_target(components.en_passant_target);
         halfmove_clock = components.halfmove_clock;
         fullmove_number = components.fullmove_number;
         
@@ -140,8 +140,8 @@ std::string Board::to_fen() const {
     FENComponents components;
     components.piece_placement = to_fen_piece_placement();
     components.active_color = active_color;
-    components.castling_rights = castling_rights;
-    components.en_passant_target = en_passant_target;
+    components.castling_rights = get_castling_rights();
+    components.en_passant_target = get_en_passant_target();
     components.halfmove_clock = halfmove_clock;
     components.fullmove_number = fullmove_number;
     
@@ -157,24 +157,73 @@ void Board::initialize_empty_board() {
 }
 
 void Board::initialize_starting_position() {
-    // Set starting position
-    set_position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+    // Optimized starting position setup
+    initialize_empty_board();
+    
+    // Set pieces directly for better performance
+    const char* white_pieces = "RNBQKBNR";
+    const char* black_pieces = "rnbqkbnr";
+    
+    // Set back ranks
+    for (int file = 0; file < 8; file++) {
+        board[0][file] = black_pieces[file];
+        board[7][file] = white_pieces[file];
+    }
+    
+    // Set pawns
+    for (int file = 0; file < 8; file++) {
+        board[1][file] = 'p';
+        board[6][file] = 'P';
+    }
+    
+    // Set game state
+    active_color = 'w';
+    castling_rights_bits = ALL_CASTLING;
+    en_passant_file = -1;
+    halfmove_clock = 0;
+    fullmove_number = 1;
 }
 
-char Board::file_to_char(int file) const {
-    return 'a' + file;
+// Legacy string methods for compatibility
+std::string Board::get_castling_rights() const {
+    if (castling_rights_bits == NO_CASTLING) return "-";
+    
+    std::string result;
+    if (castling_rights_bits & WHITE_KINGSIDE) result += 'K';
+    if (castling_rights_bits & WHITE_QUEENSIDE) result += 'Q';
+    if (castling_rights_bits & BLACK_KINGSIDE) result += 'k';
+    if (castling_rights_bits & BLACK_QUEENSIDE) result += 'q';
+    
+    return result;
 }
 
-int Board::char_to_file(char file) const {
-    return file - 'a';
+std::string Board::get_en_passant_target() const {
+    if (en_passant_file == -1) return "-";
+    
+    char file_char = 'a' + en_passant_file;
+    char rank_char = (active_color == 'w') ? '6' : '3';
+    return std::string(1, file_char) + std::string(1, rank_char);
 }
 
-char Board::rank_to_char(int rank) const {
-    return '8' - rank;
+void Board::set_castling_rights(const std::string& rights) {
+    castling_rights_bits = NO_CASTLING;
+    
+    for (char c : rights) {
+        switch (c) {
+            case 'K': castling_rights_bits |= WHITE_KINGSIDE; break;
+            case 'Q': castling_rights_bits |= WHITE_QUEENSIDE; break;
+            case 'k': castling_rights_bits |= BLACK_KINGSIDE; break;
+            case 'q': castling_rights_bits |= BLACK_QUEENSIDE; break;
+        }
+    }
 }
 
-int Board::char_to_rank(char rank) const {
-    return '8' - rank;
+void Board::set_en_passant_target(const std::string& target) {
+    if (target == "-" || target.empty()) {
+        en_passant_file = -1;
+    } else {
+        en_passant_file = target[0] - 'a';
+    }
 }
 
 // Move validation
@@ -242,61 +291,50 @@ bool Board::make_move(const Move& move) {
     
     // Update game state
     
-    // Update castling rights
-    std::string new_castling = castling_rights;
+    // Update castling rights (optimized with bitwise operations)
     if (move.piece == 'K') {
-        // White king moved
-        new_castling.erase(std::remove(new_castling.begin(), new_castling.end(), 'K'), new_castling.end());
-        new_castling.erase(std::remove(new_castling.begin(), new_castling.end(), 'Q'), new_castling.end());
+        // White king moved - remove all white castling rights
+        remove_castling_rights(WHITE_CASTLING);
     } else if (move.piece == 'k') {
-        // Black king moved
-        new_castling.erase(std::remove(new_castling.begin(), new_castling.end(), 'k'), new_castling.end());
-        new_castling.erase(std::remove(new_castling.begin(), new_castling.end(), 'q'), new_castling.end());
+        // Black king moved - remove all black castling rights
+        remove_castling_rights(BLACK_CASTLING);
     } else if (move.piece == 'R') {
         // White rook moved
         if (move.from_rank == 7 && move.from_file == 0) {
-            new_castling.erase(std::remove(new_castling.begin(), new_castling.end(), 'Q'), new_castling.end());
+            remove_castling_rights(WHITE_QUEENSIDE);
         } else if (move.from_rank == 7 && move.from_file == 7) {
-            new_castling.erase(std::remove(new_castling.begin(), new_castling.end(), 'K'), new_castling.end());
+            remove_castling_rights(WHITE_KINGSIDE);
         }
     } else if (move.piece == 'r') {
         // Black rook moved
         if (move.from_rank == 0 && move.from_file == 0) {
-            new_castling.erase(std::remove(new_castling.begin(), new_castling.end(), 'q'), new_castling.end());
+            remove_castling_rights(BLACK_QUEENSIDE);
         } else if (move.from_rank == 0 && move.from_file == 7) {
-            new_castling.erase(std::remove(new_castling.begin(), new_castling.end(), 'k'), new_castling.end());
+            remove_castling_rights(BLACK_KINGSIDE);
         }
     }
     
     // Check if rook was captured
-    if (move.captured_piece == 'R') {
+    if (captured == 'R') {
         if (move.to_rank == 7 && move.to_file == 0) {
-            new_castling.erase(std::remove(new_castling.begin(), new_castling.end(), 'Q'), new_castling.end());
+            remove_castling_rights(WHITE_QUEENSIDE);
         } else if (move.to_rank == 7 && move.to_file == 7) {
-            new_castling.erase(std::remove(new_castling.begin(), new_castling.end(), 'K'), new_castling.end());
+            remove_castling_rights(WHITE_KINGSIDE);
         }
-    } else if (move.captured_piece == 'r') {
+    } else if (captured == 'r') {
         if (move.to_rank == 0 && move.to_file == 0) {
-            new_castling.erase(std::remove(new_castling.begin(), new_castling.end(), 'q'), new_castling.end());
+            remove_castling_rights(BLACK_QUEENSIDE);
         } else if (move.to_rank == 0 && move.to_file == 7) {
-            new_castling.erase(std::remove(new_castling.begin(), new_castling.end(), 'k'), new_castling.end());
+            remove_castling_rights(BLACK_KINGSIDE);
         }
     }
     
-    if (new_castling.empty()) {
-        new_castling = "-";
-    }
-    castling_rights = new_castling;
-    
-    // Update en passant target
+    // Update en passant target (optimized)
     if (std::tolower(move.piece) == 'p' && abs(move.to_rank - move.from_rank) == 2) {
-        // Pawn moved two squares, set en passant target
-        int target_rank = (move.from_rank + move.to_rank) / 2;
-        char file_char = 'a' + move.from_file;
-        char rank_char = '8' - target_rank;
-        en_passant_target = std::string(1, file_char) + std::string(1, rank_char);
+        // Pawn moved two squares, set en passant file
+        en_passant_file = move.from_file;
     } else {
-        en_passant_target = "-";
+        en_passant_file = -1;
     }
     
     // Update halfmove clock
@@ -373,61 +411,50 @@ bool Board::make_move(const Move& move, BoardState& state) {
     
     // Update game state
     
-    // Update castling rights
-    std::string new_castling = castling_rights;
+    // Update castling rights (optimized with bitwise operations)
     if (move.piece == 'K') {
-        // White king moved
-        new_castling.erase(std::remove(new_castling.begin(), new_castling.end(), 'K'), new_castling.end());
-        new_castling.erase(std::remove(new_castling.begin(), new_castling.end(), 'Q'), new_castling.end());
+        // White king moved - remove all white castling rights
+        remove_castling_rights(WHITE_CASTLING);
     } else if (move.piece == 'k') {
-        // Black king moved
-        new_castling.erase(std::remove(new_castling.begin(), new_castling.end(), 'k'), new_castling.end());
-        new_castling.erase(std::remove(new_castling.begin(), new_castling.end(), 'q'), new_castling.end());
+        // Black king moved - remove all black castling rights
+        remove_castling_rights(BLACK_CASTLING);
     } else if (move.piece == 'R') {
         // White rook moved
         if (move.from_rank == 7 && move.from_file == 0) {
-            new_castling.erase(std::remove(new_castling.begin(), new_castling.end(), 'Q'), new_castling.end());
+            remove_castling_rights(WHITE_QUEENSIDE);
         } else if (move.from_rank == 7 && move.from_file == 7) {
-            new_castling.erase(std::remove(new_castling.begin(), new_castling.end(), 'K'), new_castling.end());
+            remove_castling_rights(WHITE_KINGSIDE);
         }
     } else if (move.piece == 'r') {
         // Black rook moved
         if (move.from_rank == 0 && move.from_file == 0) {
-            new_castling.erase(std::remove(new_castling.begin(), new_castling.end(), 'q'), new_castling.end());
+            remove_castling_rights(BLACK_QUEENSIDE);
         } else if (move.from_rank == 0 && move.from_file == 7) {
-            new_castling.erase(std::remove(new_castling.begin(), new_castling.end(), 'k'), new_castling.end());
+            remove_castling_rights(BLACK_KINGSIDE);
         }
     }
     
     // Check if rook was captured
     if (state.captured_piece == 'R') {
         if (move.to_rank == 7 && move.to_file == 0) {
-            new_castling.erase(std::remove(new_castling.begin(), new_castling.end(), 'Q'), new_castling.end());
+            remove_castling_rights(WHITE_QUEENSIDE);
         } else if (move.to_rank == 7 && move.to_file == 7) {
-            new_castling.erase(std::remove(new_castling.begin(), new_castling.end(), 'K'), new_castling.end());
+            remove_castling_rights(WHITE_KINGSIDE);
         }
     } else if (state.captured_piece == 'r') {
         if (move.to_rank == 0 && move.to_file == 0) {
-            new_castling.erase(std::remove(new_castling.begin(), new_castling.end(), 'q'), new_castling.end());
+            remove_castling_rights(BLACK_QUEENSIDE);
         } else if (move.to_rank == 0 && move.to_file == 7) {
-            new_castling.erase(std::remove(new_castling.begin(), new_castling.end(), 'k'), new_castling.end());
+            remove_castling_rights(BLACK_KINGSIDE);
         }
     }
     
-    if (new_castling.empty()) {
-        new_castling = "-";
-    }
-    castling_rights = new_castling;
-    
-    // Update en passant target
+    // Update en passant target (optimized)
     if (std::tolower(move.piece) == 'p' && abs(move.to_rank - move.from_rank) == 2) {
-        // Pawn moved two squares, set en passant target
-        int target_rank = (move.from_rank + move.to_rank) / 2;
-        char file_char = 'a' + move.from_file;
-        char rank_char = '8' - target_rank;
-        en_passant_target = std::string(1, file_char) + std::string(1, rank_char);
+        // Pawn moved two squares, set en passant file
+        en_passant_file = move.from_file;
     } else {
-        en_passant_target = "-";
+        en_passant_file = -1;
     }
     
     // Update halfmove clock
@@ -448,12 +475,12 @@ bool Board::make_move(const Move& move, BoardState& state) {
     return true;
 }
 
-// Undo a move
+// Undo a move (optimized)
 void Board::undo_move(const Move& move, const BoardState& state) {
-    // Restore game state
+    // Restore game state (optimized)
     active_color = state.active_color;
-    castling_rights = state.castling_rights;
-    en_passant_target = state.en_passant_target;
+    castling_rights_bits = state.castling_rights_bits;
+    en_passant_file = state.en_passant_file;
     halfmove_clock = state.halfmove_clock;
     fullmove_number = state.fullmove_number;
     
@@ -489,15 +516,15 @@ void Board::undo_move(const Move& move, const BoardState& state) {
     }
 }
 
-// Get current board state for undo
+// Get current board state for undo (optimized)
 Board::BoardState Board::get_board_state() const {
     BoardState state;
     state.active_color = active_color;
-    state.castling_rights = castling_rights;
-    state.en_passant_target = en_passant_target;
+    state.castling_rights_bits = castling_rights_bits;
+    state.en_passant_file = en_passant_file;
     state.halfmove_clock = halfmove_clock;
     state.fullmove_number = fullmove_number;
-    state.captured_piece = '.'; // Will be set when making the move
+    state.captured_piece = '.';
     return state;
 }
 
@@ -539,14 +566,14 @@ Move Board::create_move_from_algebraic(const std::string& algebraic) const {
         is_castling = true;
     }
     
-    // Check for en passant
+    // Check for en passant (optimized)
     bool is_en_passant = false;
     if (std::tolower(piece) == 'p' && captured_piece == '.' && from_file != to_file) {
         // Pawn moving diagonally to empty square - must be en passant
-        if (en_passant_target != "-") {
-            int ep_file = char_to_file(en_passant_target[0]);
-            int ep_rank = char_to_rank(en_passant_target[1]);
-            if (to_file == ep_file && to_rank == ep_rank) {
+        if (get_en_passant_file() != -1 && to_file == get_en_passant_file()) {
+            // Calculate expected en passant target rank
+            int expected_rank = (active_color == 'w') ? 2 : 5;
+            if (to_rank == expected_rank) {
                 is_en_passant = true;
                 // The captured piece is actually on a different square
                 int captured_rank = (active_color == 'w') ? to_rank + 1 : to_rank - 1;

@@ -4,6 +4,9 @@
 #include <string>
 #include <vector>
 
+// Forward declaration
+class Board;
+
 struct FENComponents {
     std::string piece_placement;
     char active_color;
@@ -28,6 +31,9 @@ public:
     
     // FEN generation
     static std::string create_fen(const FENComponents& components);
+    static std::string create_fen(const std::string& piece_placement, char active_color, 
+                                  const std::string& castling_rights, const std::string& en_passant_target, 
+                                  int halfmove_clock, int fullmove_number);
     
 private:
     // Helper methods
