@@ -1,31 +1,20 @@
 #include "Engine.h"
 #include "Search.h"
-#include <iostream>
 
-Engine::Engine() {
-    // Initialize with starting position
-    current_position = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-    
-    // Board initializes itself with starting position
-    std::cout << "Engine initialized with starting position" << std::endl;
-}
+Engine::Engine() : board(), current_position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1") {}
 
-Engine::~Engine() {
-    std::cout << "Engine destroyed" << std::endl;
-}
+Engine::~Engine() = default;
 
-void Engine::set_position(const std::string& fen) {
+void Engine::set_position(std::string_view fen) {
     board.set_position(fen);
-    current_position = board.to_fen();
-    std::cout << "Position set to: " << current_position << std::endl;
+    current_position = fen;
 }
 
-std::string Engine::search_best_move(int depth) {
-    std::cout << "Searching for best move at depth " << depth << std::endl;
-    std::cout << "Current position: " << current_position << std::endl;
-
-
+std::string Engine::get_best_move(int depth) {
     return "e2e4"; // Placeholder for the best move
+
+    // std::cout << "Searching for best move at depth " << depth << std::endl;
+    // std::cout << "Current position: " << current_position << std::endl;
     // // Use the search algorithm to find the best move
     // Move best_move = Search::find_best_move(board, depth);
     //

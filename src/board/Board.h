@@ -2,6 +2,7 @@
 #define BOARD_H
 
 #include <string>
+#include <string_view>
 #include <cstdint>
 #include "Move.h"
 
@@ -29,8 +30,8 @@ public:
     
     // Board setup and manipulation
     void clear();
-    void set_from_fen(const std::string& piece_placement);
-    void set_position(const std::string& fen);
+    void set_from_fen(std::string_view piece_placement);
+    void set_position(std::string_view fen);
     void print() const;
     
     // Piece access
@@ -70,8 +71,8 @@ public:
     void set_fullmove_number(uint16_t number) { fullmove_number = number; }
     
     // Legacy string methods for compatibility
-    void set_castling_rights(const std::string& rights);
-    void set_en_passant_target(const std::string& target);
+    void set_castling_rights(std::string_view rights);
+    void set_en_passant_target(std::string_view target);
     
     // Board state for undo functionality
     struct BoardState {
@@ -93,7 +94,7 @@ public:
     void undo_move(const Move& move, const BoardState& previous_state);
     
     // Move creation from algebraic notation
-    Move create_move_from_algebraic(const std::string& algebraic) const;
+    Move create_move_from_algebraic(std::string_view algebraic) const;
     
     // Get current board state for undo
     BoardState get_board_state() const;

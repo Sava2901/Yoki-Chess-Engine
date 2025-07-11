@@ -5,7 +5,7 @@
 #include <cctype>
 #include <algorithm>
 
-bool FENUtils::is_valid_fen(const std::string& fen) {
+bool FENUtils::is_valid_fen(std::string_view fen) {
     if (fen.empty()) {
         std::cout << "FEN validation failed: Empty string" << std::endl;
         return false;
@@ -14,7 +14,7 @@ bool FENUtils::is_valid_fen(const std::string& fen) {
     // Split FEN into its 6 components
     std::vector<std::string> parts = split_fen(fen);
     
-    if (parts.size() != 6) {
+    if (parts.size() != FEN_COMPONENTS) {
         std::cout << "FEN validation failed: Expected 6 parts, got " << parts.size() << std::endl;
         return false;
     }
@@ -58,7 +58,7 @@ bool FENUtils::is_valid_fen(const std::string& fen) {
     return true;
 }
 
-FENComponents FENUtils::parse_fen(const std::string& fen) {
+FENComponents FENUtils::parse_fen(std::string_view fen) {
     std::cout << "Parsing FEN: " << fen << std::endl;
     
     std::vector<std::string> parts = split_fen(fen);
@@ -91,9 +91,9 @@ FENComponents FENUtils::parse_fen(const std::string& fen) {
     return components;
 }
 
-bool FENUtils::validate_piece_placement(const std::string& placement) {
+bool FENUtils::validate_piece_placement(std::string_view placement) {
     std::vector<std::string> ranks;
-    std::istringstream iss(placement);
+    std::istringstream iss(static_cast<std::string>(placement));
     std::string rank;
     
     // Split by '/'
@@ -101,7 +101,7 @@ bool FENUtils::validate_piece_placement(const std::string& placement) {
         ranks.push_back(rank);
     }
     
-    if (ranks.size() != 8) {
+    if (ranks.size() != BOARD_SIZE) {
         return false;
     }
     
@@ -110,18 +110,17 @@ bool FENUtils::validate_piece_placement(const std::string& placement) {
         for (char c : r) {
             if (std::isdigit(c)) {
                 int empty_squares = c - '0';
-                if (empty_squares < 1 || empty_squares > 8) {
+                if (empty_squares < 1 || empty_squares > BOARD_SIZE) {
                     return false;
                 }
                 file_count += empty_squares;
-            } else if (c == 'p' || c == 'r' || c == 'n' || c == 'b' || c == 'q' || c == 'k' ||
-                      c == 'P' || c == 'R' || c == 'N' || c == 'B' || c == 'Q' || c == 'K') {
+            } else if (is_valid_piece(c)) {
                 file_count++;
             } else {
                 return false; // Invalid character
             }
         }
-        if (file_count != 8) {
+        if (file_count != BOARD_SIZE) {
             return false; // Each rank must have exactly 8 squares
         }
     }
@@ -129,11 +128,11 @@ bool FENUtils::validate_piece_placement(const std::string& placement) {
     return true;
 }
 
-bool FENUtils::validate_active_color(const std::string& color) {
+bool FENUtils::validate_active_color(std::string_view color) {
     return color == "w" || color == "b";
 }
 
-bool FENUtils::validate_castling_rights(const std::string& rights) {
+bool FENUtils::validate_castling_rights(std::string_view rights) {
     if (rights == "-") {
         return true;
     }
@@ -147,7 +146,7 @@ bool FENUtils::validate_castling_rights(const std::string& rights) {
     }
     
     // Check for duplicates
-    std::string sorted_rights = rights;
+    std::string sorted_rights = static_cast<std::string>(rights);
     std::sort(sorted_rights.begin(), sorted_rights.end());
     for (size_t i = 1; i < sorted_rights.length(); i++) {
         if (sorted_rights[i] == sorted_rights[i-1]) {
@@ -158,7 +157,7 @@ bool FENUtils::validate_castling_rights(const std::string& rights) {
     return true;
 }
 
-bool FENUtils::validate_en_passant(const std::string& target) {
+bool FENUtils::validate_en_passant(std::string_view target) {
     if (target == "-") {
         return true;
     }
@@ -174,7 +173,7 @@ bool FENUtils::validate_en_passant(const std::string& target) {
     return (file >= 'a' && file <= 'h') && (rank == '3' || rank == '6');
 }
 
-bool FENUtils::validate_number(const std::string& num) {
+bool FENUtils::validate_number(std::string_view num) {
     if (num.empty()) {
         return false;
     }
@@ -206,8 +205,8 @@ std::string FENUtils::create_fen(const FENComponents& components) {
     return fen;
 }
 
-std::string FENUtils::create_fen(const std::string& piece_placement, char active_color, 
-                                const std::string& castling_rights, const std::string& en_passant_target, 
+std::string FENUtils::create_fen(std::string_view piece_placement, char active_color, 
+                                std::string_view castling_rights, std::string_view en_passant_target, 
                                 int halfmove_clock, int fullmove_number) {
     // Use string concatenation with reserve for better performance
     std::string fen;
@@ -228,9 +227,10 @@ std::string FENUtils::create_fen(const std::string& piece_placement, char active
     return fen;
 }
 
-std::vector<std::string> FENUtils::split_fen(const std::string& fen) {
-    std::istringstream iss(fen);
+std::vector<std::string> FENUtils::split_fen(std::string_view fen) {
+    std::istringstream iss(static_cast<std::string>(fen));
     std::vector<std::string> parts;
+    parts.reserve(FEN_COMPONENTS);
     std::string part;
     
     while (iss >> part) {
@@ -238,4 +238,8 @@ std::vector<std::string> FENUtils::split_fen(const std::string& fen) {
     }
     
     return parts;
+}
+
+bool FENUtils::is_valid_piece(char piece) {
+    return std::find(VALID_PIECES.begin(), VALID_PIECES.end(), piece) != VALID_PIECES.end();
 }

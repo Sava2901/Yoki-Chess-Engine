@@ -181,7 +181,7 @@ int main() {
         std::cout << "\n=== Test 8: Engine Integration ===" << std::endl;
         std::cout << "Testing engine with starting position..." << std::endl;
         engine.set_position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
-        std::string best_move = engine.search_best_move(3);
+        std::string best_move = engine.get_best_move(3);
         std::cout << "Best move from engine: " << best_move << std::endl;
         
         // Test 9: Move Validation

@@ -23,11 +23,11 @@ void Board::clear() {
     fullmove_number = 1;
 }
 
-void Board::set_from_fen(const std::string& piece_placement) {
+void Board::set_from_fen(std::string_view piece_placement) {
     initialize_empty_board();
     
     std::vector<std::string> ranks;
-    std::istringstream iss(piece_placement);
+    std::istringstream iss(static_cast<std::string>(piece_placement));
     std::string rank;
     
     // Split by '/'
@@ -50,7 +50,7 @@ void Board::set_from_fen(const std::string& piece_placement) {
     }
 }
 
-void Board::set_position(const std::string& fen) {
+void Board::set_position(std::string_view fen) {
     if (FENUtils::is_valid_fen(fen)) {
         FENComponents components = FENUtils::parse_fen(fen);
         
@@ -67,7 +67,7 @@ void Board::set_position(const std::string& fen) {
         // Print the board
         print();
     } else {
-        std::cout << "Invalid FEN notation: " << fen << std::endl;
+        // std::cout << "Invalid FEN notation: " << fen << std::endl;
     }
 }
 
@@ -205,7 +205,7 @@ std::string Board::get_en_passant_target() const {
     return std::string(1, file_char) + std::string(1, rank_char);
 }
 
-void Board::set_castling_rights(const std::string& rights) {
+void Board::set_castling_rights(std::string_view rights) {
     castling_rights_bits = NO_CASTLING;
     
     for (char c : rights) {
@@ -218,7 +218,7 @@ void Board::set_castling_rights(const std::string& rights) {
     }
 }
 
-void Board::set_en_passant_target(const std::string& target) {
+void Board::set_en_passant_target(std::string_view target) {
     if (target == "-" || target.empty()) {
         en_passant_file = -1;
     } else {
@@ -529,7 +529,7 @@ Board::BoardState Board::get_board_state() const {
 }
 
 // Create move from algebraic notation (e.g., "e2e4", "e7e8q")
-Move Board::create_move_from_algebraic(const std::string& algebraic) const {
+Move Board::create_move_from_algebraic(std::string_view algebraic) const {
     if (algebraic.length() < 4) {
         return Move(); // Invalid move
     }
