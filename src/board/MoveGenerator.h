@@ -1,100 +1,80 @@
-#ifndef MOVEGENERATOR_H
-#define MOVEGENERATOR_H
+#ifndef BITBOARD_MOVE_GENERATOR_H
+#define BITBOARD_MOVE_GENERATOR_H
 
-#include "Move.h"
 #include "Board.h"
+#include "Move.h"
+#include "Bitboard.h"
 #include <vector>
-#include <array>
 
-// Precomputed move directions for better performance
-static constexpr std::array<std::pair<int, int>, 8> KNIGHT_MOVES = {{
-    {-2, -1}, {-2, 1}, {-1, -2}, {-1, 2},
-    {1, -2}, {1, 2}, {2, -1}, {2, 1}
-}};
-
-static constexpr std::array<std::pair<int, int>, 8> KING_MOVES = {{
-    {-1, -1}, {-1, 0}, {-1, 1},
-    {0, -1},           {0, 1},
-    {1, -1},  {1, 0},  {1, 1}
-}};
-
-static constexpr std::array<std::pair<int, int>, 4> ROOK_DIRECTIONS = {{
-    {-1, 0}, {1, 0}, {0, -1}, {0, 1}
-}};
-
-static constexpr std::array<std::pair<int, int>, 4> BISHOP_DIRECTIONS = {{
-    {-1, -1}, {-1, 1}, {1, -1}, {1, 1}
-}};
-
-static constexpr std::array<std::pair<int, int>, 8> QUEEN_DIRECTIONS = {{
-    {-1, -1}, {-1, 0}, {-1, 1},
-    {0, -1},           {0, 1},
-    {1, -1},  {1, 0},  {1, 1}
-}};
-
+/**
+ * BitboardMoveGenerator - High-performance move generation using bitboards
+ * This class provides O(1) sliding piece move generation using magic bitboards
+ */
 class MoveGenerator {
 public:
-    // Generate all pseudo-legal moves (ignoring check)
-    static MoveList generate_pseudo_legal_moves(const Board& board);
-    
-    // Generate all legal moves (filtering out moves that leave king in check)
-    static MoveList generate_legal_moves(Board& board);
-    
-    // Check if a move is legal (doesn't leave own king in check)
-    static bool is_legal_move(Board& board, const Move& move);
-    
-    // Check if the current player's king is in check
-    static bool is_in_check(const Board& board, char color);
-    
-    // Check if the king at the given position is in check
-    static bool is_in_check(const Board& board, char color, const std::pair<int, int>& king_pos);
-    
-    // Check if a square is under attack by the opponent
-    static bool is_square_attacked(const Board& board, int rank, int file, char attacking_color);
-    
-private:
-    // Generate moves for specific piece types
-    static void generate_pawn_moves(const Board& board, int rank, int file, MoveList& moves);
-    static void generate_rook_moves(const Board& board, int rank, int file, MoveList& moves);
-    static void generate_knight_moves(const Board& board, int rank, int file, MoveList& moves);
-    static void generate_bishop_moves(const Board& board, int rank, int file, MoveList& moves);
-    static void generate_queen_moves(const Board& board, int rank, int file, MoveList& moves);
-    static void generate_king_moves(const Board& board, int rank, int file, MoveList& moves);
-    
-    // Generate castling moves
-    static void generate_castling_moves(const Board& board, MoveList& moves);
-    
+    MoveGenerator();
 
+    // Main move generation functions
+    std::vector<Move> generate_all_moves(const Board& board);
+    std::vector<Move> generate_legal_moves(Board& board);
+    std::vector<Move> generate_captures(const Board& board);
+    std::vector<Move> generate_quiet_moves(const Board& board);
+
+    // Specific piece move generation
+    void generate_pawn_moves(const Board& board, std::vector<Move>& moves, bool captures_only = false);
+    void generate_knight_moves(const Board& board, std::vector<Move>& moves, bool captures_only = false);
+    void generate_bishop_moves(const Board& board, std::vector<Move>& moves, bool captures_only = false);
+    void generate_rook_moves(const Board& board, std::vector<Move>& moves, bool captures_only = false);
+    void generate_queen_moves(const Board& board, std::vector<Move>& moves, bool captures_only = false);
+    void generate_king_moves(const Board& board, std::vector<Move>& moves, bool captures_only = false);
+
+    // Special moves
+    void generate_castling_moves(const Board& board, std::vector<Move>& moves);
+    void generate_en_passant_moves(const Board& board, std::vector<Move>& moves);
+
+    // Check and legality testing
+    bool is_in_check(const Board& board, Board::Color color);
+    bool is_legal_move(Board& board, const Move& move);
+    bool is_square_attacked(const Board& board, int square, Board::Color attacking_color);
+
+    // Attack generation
+    Bitboard get_attacked_squares(const Board& board, Board::Color color);
+    Bitboard get_piece_attacks(const Board& board, int square, Board::PieceType piece_type, Board::Color color);
+
+    // Utility functions
+    int count_moves(const Board& board);
+    bool has_legal_moves(Board& board);
+
+private:
+    // Helper functions for move generation
+    void add_moves_from_bitboard(Bitboard from_square, Bitboard to_squares,
+                                Board::PieceType piece_type, Board::Color color,
+                                const Board& board, std::vector<Move>& moves, bool captures_only = false);
+
+    void add_pawn_moves(int from_square, Bitboard to_squares, Board::Color color,
+                       const Board& board, std::vector<Move>& moves, bool is_capture = false);
+
+    void add_promotion_moves(int from_square, int to_square, Board::Color color,
+                            const Board& board, std::vector<Move>& moves, bool is_capture = false);
+
+    // Castling helpers
+    bool can_castle_kingside(const Board& board, Board::Color color);
+    bool can_castle_queenside(const Board& board, Board::Color color);
+
+    // Pin and discovery helpers
+    Bitboard get_pinned_pieces(const Board& board, Board::Color color);
+    Bitboard get_check_mask(const Board& board, Board::Color color);
+
+    // Move filtering
+    bool is_move_legal_in_check(const Board& board, const Move& move, Bitboard check_mask, Bitboard pinned_pieces);
+
+    // Utility functions
+    char piece_type_to_char(Board::PieceType piece_type, Board::Color color);
+    bool is_promotion_rank(int rank, Board::Color color);
     
-    // Optimized helper functions for sliding pieces
-    template<size_t N>
-    static void generate_sliding_moves(const Board& board, int rank, int file, 
-                                     const std::array<std::pair<int, int>, N>& directions, 
-                                     MoveList& moves);
-    
-    // Optimized helper functions (inline for better performance)
-    static bool is_own_piece(char piece, char active_color) {
-        return piece != '.' && get_piece_color(piece) == active_color;
-    }
-    
-    static bool is_opponent_piece(char piece, char active_color) {
-        return piece != '.' && get_piece_color(piece) != active_color;
-    }
-    
-    static char get_piece_color(char piece) {
-        return std::isupper(piece) ? 'w' : 'b';
-    }
-    
-    // Fast square validation
-    static bool is_valid_square(int rank, int file) {
-        return (rank | file) >= 0 && (rank | file) < 8;
-    }
-    
-    // Helper functions
-    static void perform_castling_rook_move(Board& board, const Move& move, 
-                                         int& rook_from_file, int& rook_to_file,
-                                         char& original_rook_from, char& original_rook_to);
-    static std::pair<int, int> find_king_position(const Board& board, char color);
+    // Performance counters (optional)
+    mutable long long nodes_searched;
+    mutable long long moves_generated;
 };
 
-#endif // MOVEGENERATOR_H
+#endif // BITBOARD_MOVE_GENERATOR_H

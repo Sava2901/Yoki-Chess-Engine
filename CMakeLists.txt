@@ -16,13 +16,20 @@ add_library(engine
     src/engine/Search.h
     src/engine/Evaluation.cpp
     src/engine/Evaluation.h
-    src/board/Board.cpp
-    src/board/Board.h
-    src/board/FENUtils.cpp
-    src/board/FENUtils.h
+        src/board/Move.cpp
     src/board/Move.h
-    src/board/MoveGenerator.cpp
-    src/board/MoveGenerator.h
+)
+
+# Create bitboard library
+add_library(bitboard
+    src/board/Bitboard.cpp
+    src/board/Bitboard.h
+        src/board/Board.cpp
+        src/board/Board.h
+        src/board/MoveGenerator.cpp
+        src/board/MoveGenerator.h
+    src/board/Move.cpp
+    src/board/Move.h
 )
 
 # Create test executable
@@ -30,8 +37,16 @@ add_executable(yokichess_test
     src/main/test.cpp
 )
 
+# Create bitboard test executable
+add_executable(test_bitboards
+    src/board/test_bitboards.cpp
+)
+
 # Link engine library to test executable
 target_link_libraries(yokichess_test engine)
+
+# Link bitboard library to bitboard test executable
+target_link_libraries(test_bitboards bitboard)
 
 # Set output directory for executable
 set_target_properties(yokichess_test PROPERTIES
