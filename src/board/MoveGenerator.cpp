@@ -78,11 +78,10 @@ MoveList MoveGenerator::generate_pseudo_legal_moves(const Board& board) {
     // Add special moves
     generate_castling_moves(board, moves);
 
-    
     return moves;
 }
 
-MoveList MoveGenerator::generate_legal_moves(const Board& board) {
+MoveList MoveGenerator::generate_legal_moves(Board& board) {
     MoveList pseudo_legal = generate_pseudo_legal_moves(board);
     MoveList legal_moves;
     
@@ -96,13 +95,64 @@ MoveList MoveGenerator::generate_legal_moves(const Board& board) {
     return legal_moves;
 }
 
-bool MoveGenerator::is_legal_move(const Board& board, const Move& move) {
-    // Make the move on a copy of the board
-    Board temp_board = make_move_on_copy(board, move);
+bool MoveGenerator::is_legal_move(Board& board, const Move& move) {
+    // Store original state for undo
+    char original_piece_from = board.get_piece(move.from_rank, move.from_file);
+    char original_piece_to = board.get_piece(move.to_rank, move.to_file);
+    char original_en_passant_captured = 0;
+    int original_en_passant_rank = 0;
+    char original_rook_from = '.';
+    char original_rook_to = '.';
+    int rook_from_file = -1, rook_to_file = -1;
+    uint8_t original_castling_rights = board.get_castling_rights_bits();
+    int8_t original_en_passant_file = board.get_en_passant_file();
     
-    // Check if our king is in check after the move
     char our_color = board.get_active_color();
-    return !is_in_check(temp_board, our_color);
+    
+    // Make the move
+    board.set_piece(move.from_rank, move.from_file, '.');
+    board.set_piece(move.to_rank, move.to_file, move.piece);
+    
+    // Handle special moves
+    if (move.is_castling) {
+        // Move the rook for castling using helper logic
+        perform_castling_rook_move(board, move, rook_from_file, rook_to_file, original_rook_from, original_rook_to);
+    }
+    
+    if (move.is_en_passant) {
+        // Remove the captured pawn
+        original_en_passant_rank = (our_color == 'w') ? move.to_rank + 1 : move.to_rank - 1;
+        original_en_passant_captured = board.get_piece(original_en_passant_rank, move.to_file);
+        board.set_piece(original_en_passant_rank, move.to_file, '.');
+    }
+    
+    if (move.promotion_piece != '.') {
+        // Handle pawn promotion
+        board.set_piece(move.to_rank, move.to_file, move.promotion_piece);
+    }
+
+    // Check if our king is in check after the move
+    bool is_legal = !is_in_check(board, our_color);
+    
+    // Undo the move
+    board.set_piece(move.from_rank, move.from_file, original_piece_from);
+    board.set_piece(move.to_rank, move.to_file, original_piece_to);
+    
+    // Undo special moves
+    if (move.is_castling) {
+        board.set_piece(move.from_rank, rook_from_file, original_rook_from);
+        board.set_piece(move.from_rank, rook_to_file, original_rook_to);
+    }
+    
+    if (move.is_en_passant) {
+        board.set_piece(original_en_passant_rank, move.to_file, original_en_passant_captured);
+    }
+    
+    // Restore board state (castling rights, en passant)
+    board.set_castling_rights_bits(original_castling_rights);
+    board.set_en_passant_file(original_en_passant_file);
+
+    return is_legal;
 }
 
 bool MoveGenerator::is_in_check(const Board& board, char color) {
@@ -323,7 +373,7 @@ void MoveGenerator::generate_castling_moves(const Board& board, MoveList& moves)
     
     if (active_color == 'w') {
         // White kingside castling
-        if (castling_rights & CastlingRights::WHITE_KINGSIDE) {
+        if (castling_rights & WHITE_KINGSIDE) {
             if (board.get_piece(7, 5) == '.' && board.get_piece(7, 6) == '.' &&
                 !is_square_attacked(board, 7, 4, 'b') &&
                 !is_square_attacked(board, 7, 5, 'b') &&
@@ -335,7 +385,7 @@ void MoveGenerator::generate_castling_moves(const Board& board, MoveList& moves)
         }
         
         // White queenside castling
-        if (castling_rights & CastlingRights::WHITE_QUEENSIDE) {
+        if (castling_rights & WHITE_QUEENSIDE) {
             if (board.get_piece(7, 1) == '.' && board.get_piece(7, 2) == '.' && board.get_piece(7, 3) == '.' &&
                 !is_square_attacked(board, 7, 4, 'b') &&
                 !is_square_attacked(board, 7, 3, 'b') &&
@@ -347,7 +397,7 @@ void MoveGenerator::generate_castling_moves(const Board& board, MoveList& moves)
         }
     } else {
         // Black kingside castling
-        if (castling_rights & CastlingRights::BLACK_KINGSIDE) {
+        if (castling_rights & BLACK_KINGSIDE) {
             if (board.get_piece(0, 5) == '.' && board.get_piece(0, 6) == '.' &&
                 !is_square_attacked(board, 0, 4, 'w') &&
                 !is_square_attacked(board, 0, 5, 'w') &&
@@ -359,7 +409,7 @@ void MoveGenerator::generate_castling_moves(const Board& board, MoveList& moves)
         }
         
         // Black queenside castling
-        if (castling_rights & CastlingRights::BLACK_QUEENSIDE) {
+        if (castling_rights & BLACK_QUEENSIDE) {
             if (board.get_piece(0, 1) == '.' && board.get_piece(0, 2) == '.' && board.get_piece(0, 3) == '.' &&
                 !is_square_attacked(board, 0, 4, 'w') &&
                 !is_square_attacked(board, 0, 3, 'w') &&
@@ -372,11 +422,21 @@ void MoveGenerator::generate_castling_moves(const Board& board, MoveList& moves)
     }
 }
 
-
-
-
-
-// is_own_piece and is_opponent_piece moved to header as inline functions for better performance
+void MoveGenerator::perform_castling_rook_move(Board& board, const Move& move, 
+                                             int& rook_from_file, int& rook_to_file,
+                                             char& original_rook_from, char& original_rook_to) {
+    // Determine rook movement based on castling type
+    rook_from_file = (move.to_file == 6) ? 7 : 0; // Kingside or queenside
+    rook_to_file = (move.to_file == 6) ? 5 : 3;
+    
+    // Store original rook positions
+    original_rook_from = board.get_piece(move.from_rank, rook_from_file);
+    original_rook_to = board.get_piece(move.from_rank, rook_to_file);
+    
+    // Move the rook
+    board.set_piece(move.from_rank, rook_from_file, '.');
+    board.set_piece(move.from_rank, rook_to_file, original_rook_from);
+}
 
 std::pair<int, int> MoveGenerator::find_king_position(const Board& board, char color) {
     char king = (color == 'w') ? 'K' : 'k';
@@ -390,35 +450,4 @@ std::pair<int, int> MoveGenerator::find_king_position(const Board& board, char c
     }
     
     return {-1, -1}; // King not found (should not happen in valid position)
-}
-
-Board MoveGenerator::make_move_on_copy(const Board& board, const Move& move) {
-    Board temp_board = board;
-    
-    // Make the move on the temporary board
-    temp_board.set_piece(move.from_rank, move.from_file, '.');
-    temp_board.set_piece(move.to_rank, move.to_file, move.piece);
-    
-    // Handle special moves
-    if (move.is_castling) {
-        // Move the rook for castling
-        int rook_from_file = (move.to_file == 6) ? 7 : 0; // Kingside or queenside
-        int rook_to_file = (move.to_file == 6) ? 5 : 3;
-        char rook = temp_board.get_piece(move.from_rank, rook_from_file);
-        temp_board.set_piece(move.from_rank, rook_from_file, '.');
-        temp_board.set_piece(move.from_rank, rook_to_file, rook);
-    }
-    
-    if (move.is_en_passant) {
-        // Remove the captured pawn
-        int captured_pawn_rank = (temp_board.get_active_color() == 'w') ? move.to_rank + 1 : move.to_rank - 1;
-        temp_board.set_piece(captured_pawn_rank, move.to_file, '.');
-    }
-    
-    if (move.promotion_piece != '.') {
-        // Handle pawn promotion
-        temp_board.set_piece(move.to_rank, move.to_file, move.promotion_piece);
-    }
-    
-    return temp_board;
 }

@@ -74,8 +74,8 @@ public:
     void set_castling_rights(std::string_view rights);
     void set_en_passant_target(std::string_view target);
     
-    // Board state for undo functionality
-    struct BoardState {
+    // Move undo data for efficient move/undo operations
+    struct MoveUndoData {
         char active_color;
         uint8_t castling_rights_bits;
         int8_t en_passant_file;
@@ -83,22 +83,27 @@ public:
         uint16_t fullmove_number;
         char captured_piece;
         
-        BoardState() : active_color('w'), castling_rights_bits(ALL_CASTLING), en_passant_file(-1),
-                      halfmove_clock(0), fullmove_number(1), captured_piece('.') {}
+        Move move;
+        
+        // Additional data for special moves
+        bool was_castling;
+        bool was_en_passant;
+        char promotion_piece;
+        
+        MoveUndoData() : active_color('w'), castling_rights_bits(ALL_CASTLING), en_passant_file(-1),
+                        halfmove_clock(0), fullmove_number(1), captured_piece('.'),
+                        was_castling(false), was_en_passant(false), promotion_piece('.') {}
     };
     
     // Move validation and execution
-    bool is_valid_move(const Move& move) const;
+    bool is_legal_move(const Move& move);
     bool make_move(const Move& move);
-    bool make_move(const Move& move, BoardState& previous_state);
-    void undo_move(const Move& move, const BoardState& previous_state);
+    bool make_move(const Move& move, MoveUndoData& undo_data);
+    void undo_move(const MoveUndoData& undo_data);
     
     // Move creation from algebraic notation
     Move create_move_from_algebraic(std::string_view algebraic) const;
-    
-    // Get current board state for undo
-    BoardState get_board_state() const;
-    
+
 private:
     char board[8][8];  // 8x8 chess board representation
     
@@ -112,6 +117,7 @@ private:
     // Helper methods (optimized with inline)
     void initialize_empty_board();
     void initialize_starting_position();
+    void apply_move(const Move& move);
     
     // Optimized coordinate conversion (constexpr for compile-time evaluation)
     static constexpr char file_to_char(int file) { return 'a' + file; }

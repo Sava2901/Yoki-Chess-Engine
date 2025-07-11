@@ -193,31 +193,31 @@ int main() {
         Move valid_move1(6, 4, 4, 4, 'P', '.', '.', false, false); // e2-e4
         Move valid_move2(7, 1, 5, 2, 'N', '.', '.', false, false); // Nb1-c3
         
-        std::cout << "Valid move e2-e4: " << (board.is_valid_move(valid_move1) ? "Yes" : "No") << std::endl;
-        std::cout << "Valid move Nb1-c3: " << (board.is_valid_move(valid_move2) ? "Yes" : "No") << std::endl;
+        std::cout << "Valid move e2-e4: " << (board.is_legal_move(valid_move1) ? "Yes" : "No") << std::endl;
+        std::cout << "Valid move Nb1-c3: " << (board.is_legal_move(valid_move2) ? "Yes" : "No") << std::endl;
         
         // Test invalid moves
         Move invalid_move1(6, 4, 3, 4, 'P', '.', '.', false, false); // e2-e5 (too far)
         Move invalid_move2(7, 0, 5, 0, 'R', '.', '.', false, false); // Ra1-a6 (blocked)
         
-        std::cout << "Invalid move e2-e5: " << (board.is_valid_move(invalid_move1) ? "Yes" : "No") << std::endl;
-        std::cout << "Invalid move Ra1-a6: " << (board.is_valid_move(invalid_move2) ? "Yes" : "No") << std::endl;
+        std::cout << "Invalid move e2-e5: " << (board.is_legal_move(invalid_move1) ? "Yes" : "No") << std::endl;
+        std::cout << "Invalid move Ra1-a6: " << (board.is_legal_move(invalid_move2) ? "Yes" : "No") << std::endl;
         
         // Test 10: Make/Undo Move Functionality
         std::cout << "\n=== Test 10: Make/Undo Move Functionality ===" << std::endl;
         board.set_position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
         
         // Make a move and capture state
-        Board::BoardState state;
+        Board::MoveUndoData undo_data;
         Move test_move(6, 4, 4, 4, 'P', '.', '.', false, false); // e2-e4
         
-        bool move_success = board.make_move(test_move, state);
+        bool move_success = board.make_move(test_move, undo_data);
         std::cout << "\nMade move e2-e4: " << (move_success ? "Success" : "Failed") << std::endl;
         std::cout << "Position after e2-e4: " << std::endl;
         board.print();
         
         // Undo the move
-        board.undo_move(test_move, state);
+        board.undo_move(undo_data);
         std::cout << "\nAfter undo: " << std::endl;
         board.print();
         std::cout << "Position restored correctly: " << (board.to_fen() == "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" ? "Yes" : "No") << std::endl;
@@ -229,15 +229,15 @@ int main() {
         
         // Make a capture move
         Move capture_move(4, 4, 3, 3, 'P', 'p', '.', false, false); // exd5
-        Board::BoardState capture_state;
+        Board::MoveUndoData capture_undo_data;
         
-        move_success = board.make_move(capture_move, capture_state);
+        move_success = board.make_move(capture_move, capture_undo_data);
         std::cout << "\nMade capture exd5: " << (move_success ? "Success" : "Failed") << std::endl;
         std::cout << "Position after capture: " << std::endl;
         board.print();
         
         // Undo the capture
-        board.undo_move(capture_move, capture_state);
+        board.undo_move(capture_undo_data);
         std::cout << "\nAfter undo capture: " << std::endl;
         board.print();
         std::cout << "Capture undone correctly: " << (board.to_fen() == original_fen ? "Yes" : "No") << std::endl;
@@ -249,15 +249,15 @@ int main() {
         
         // Make kingside castling
         Move castling_move(7, 4, 7, 6, 'K', '.', '.', true, false); // O-O
-        Board::BoardState castling_state;
+        Board::MoveUndoData castling_undo_data;
         
-        move_success = board.make_move(castling_move, castling_state);
+        move_success = board.make_move(castling_move, castling_undo_data);
         std::cout << "\nMade kingside castling: " << (move_success ? "Success" : "Failed") << std::endl;
         std::cout << "Position after castling: " << std::endl;
         board.print();
         
         // Undo castling
-        board.undo_move(castling_move, castling_state);
+        board.undo_move(castling_undo_data);
         std::cout << "\nAfter undo castling: " << std::endl;
         board.print();
         std::cout << "Castling undone correctly: " << (board.to_fen() == original_fen ? "Yes" : "No") << std::endl;
@@ -283,15 +283,15 @@ int main() {
         }
 
         // Make en passant capture
-        Board::BoardState en_passant_state;
+        Board::MoveUndoData en_passant_undo_data;
         
-        move_success = board.make_move(en_passant_move, en_passant_state);
+        move_success = board.make_move(en_passant_move, en_passant_undo_data);
         std::cout << "\nMade en passant exf6: " << (move_success ? "Success" : "Failed") << std::endl;
         std::cout << "Position after en passant: " << std::endl;
         board.print();
         
         // Undo en passant
-        board.undo_move(en_passant_move, en_passant_state);
+        board.undo_move(en_passant_undo_data);
         std::cout << "\nAfter undo en passant: " << std::endl;
         board.print();
         std::cout << "En passant undone correctly: " << (board.to_fen() == original_fen ? "Yes" : "No") << std::endl;
@@ -304,15 +304,15 @@ int main() {
         
         // Make promotion move
         Move promotion_move(1, 0, 0, 0, 'P', '.', 'Q', false, false); // a7-a8=Q
-        Board::BoardState promotion_state;
+        Board::MoveUndoData promotion_undo_data;
         
-        move_success = board.make_move(promotion_move, promotion_state);
+        move_success = board.make_move(promotion_move, promotion_undo_data);
         std::cout << "\nMade promotion a7-a8=Q: " << (move_success ? "Success" : "Failed") << std::endl;
         std::cout << "Position after promotion: " << std::endl;
         board.print();
         
         // Undo promotion
-        board.undo_move(promotion_move, promotion_state);
+        board.undo_move(promotion_undo_data);
         std::cout << "\nAfter undo promotion: " << std::endl;
         board.print();
         std::cout << "Promotion undone correctly: " << (board.to_fen() == original_fen ? "Yes" : "No") << std::endl;
@@ -329,12 +329,12 @@ int main() {
             Move(0, 1, 2, 2, 'n', '.', '.', false, false)  // Nb8-c6
         };
         
-        std::vector<Board::BoardState> states;
-        states.resize(move_sequence.size());
+        std::vector<Board::MoveUndoData> undo_data_list;
+        undo_data_list.resize(move_sequence.size());
         
         // Make all moves
         for (size_t i = 0; i < move_sequence.size(); i++) {
-            bool success = board.make_move(move_sequence[i], states[i]);
+            bool success = board.make_move(move_sequence[i], undo_data_list[i]);
             board.print();
             std::cout << "Move " << (i + 1) << " (" << move_sequence[i].to_algebraic() << "): " << (success ? "Success" : "Failed") << std::endl;
         }
@@ -345,7 +345,7 @@ int main() {
         // Undo all moves in reverse order
         std::cout << "\nUndoing moves in reverse order:" << std::endl;
         for (int i = move_sequence.size() - 1; i >= 0; i--) {
-            board.undo_move(move_sequence[i], states[i]);
+            board.undo_move(undo_data_list[i]);
             board.print();
             std::cout << "Undid move " << (i + 1) << " (" << move_sequence[i].to_algebraic() << ")" << std::endl;
         }

@@ -5,6 +5,7 @@
 #include <sstream>
 #include <cctype>
 #include <cmath>
+#include <algorithm>
 
 Board::Board() {
     initialize_starting_position();
@@ -226,306 +227,11 @@ void Board::set_en_passant_target(std::string_view target) {
     }
 }
 
-// Move validation
-bool Board::is_valid_move(const Move& move) const {
-    // Basic bounds checking
-    if (!move.is_valid()) {
-        return false;
-    }
-    
-    // Use MoveGenerator to check if this move is in the list of legal moves
-    MoveList legal_moves = MoveGenerator::generate_legal_moves(*this);
-    for (const Move& legal_move : legal_moves) {
-        if (move == legal_move) {
-            return true;
-        }
-    }
-    
-    return false;
-}
-
-// Make a move on the board
-bool Board::make_move(const Move& move) {
-    if (!is_valid_move(move)) {
-        return false;
-    }
-    
-    // Store captured piece for undo (will be updated in BoardState when needed)
-    char captured = get_piece(move.to_rank, move.to_file);
-    
-    // Handle special moves first
-    if (move.is_castling) {
-        // Castling: move king and rook
-        if (move.to_file == 6) { // Kingside castling
-            set_piece(move.from_rank, move.from_file, '.');
-            set_piece(move.to_rank, move.to_file, move.piece);
-            // Move rook
-            char rook = get_piece(move.from_rank, 7);
-            set_piece(move.from_rank, 7, '.');
-            set_piece(move.from_rank, 5, rook);
-        } else if (move.to_file == 2) { // Queenside castling
-            set_piece(move.from_rank, move.from_file, '.');
-            set_piece(move.to_rank, move.to_file, move.piece);
-            // Move rook
-            char rook = get_piece(move.from_rank, 0);
-            set_piece(move.from_rank, 0, '.');
-            set_piece(move.from_rank, 3, rook);
-        }
-    } else if (move.is_en_passant) {
-        // En passant: move pawn and remove captured pawn
-        set_piece(move.from_rank, move.from_file, '.');
-        set_piece(move.to_rank, move.to_file, move.piece);
-        // Remove captured pawn
-        int captured_rank = (active_color == 'w') ? move.to_rank + 1 : move.to_rank - 1;
-        set_piece(captured_rank, move.to_file, '.');
-    } else {
-        // Normal move
-        set_piece(move.from_rank, move.from_file, '.');
-        if (move.promotion_piece != '.') {
-            // Promotion
-            set_piece(move.to_rank, move.to_file, move.promotion_piece);
-        } else {
-            set_piece(move.to_rank, move.to_file, move.piece);
-        }
-    }
-    
-    // Update game state
-    
-    // Update castling rights (optimized with bitwise operations)
-    if (move.piece == 'K') {
-        // White king moved - remove all white castling rights
-        remove_castling_rights(WHITE_CASTLING);
-    } else if (move.piece == 'k') {
-        // Black king moved - remove all black castling rights
-        remove_castling_rights(BLACK_CASTLING);
-    } else if (move.piece == 'R') {
-        // White rook moved
-        if (move.from_rank == 7 && move.from_file == 0) {
-            remove_castling_rights(WHITE_QUEENSIDE);
-        } else if (move.from_rank == 7 && move.from_file == 7) {
-            remove_castling_rights(WHITE_KINGSIDE);
-        }
-    } else if (move.piece == 'r') {
-        // Black rook moved
-        if (move.from_rank == 0 && move.from_file == 0) {
-            remove_castling_rights(BLACK_QUEENSIDE);
-        } else if (move.from_rank == 0 && move.from_file == 7) {
-            remove_castling_rights(BLACK_KINGSIDE);
-        }
-    }
-    
-    // Check if rook was captured
-    if (captured == 'R') {
-        if (move.to_rank == 7 && move.to_file == 0) {
-            remove_castling_rights(WHITE_QUEENSIDE);
-        } else if (move.to_rank == 7 && move.to_file == 7) {
-            remove_castling_rights(WHITE_KINGSIDE);
-        }
-    } else if (captured == 'r') {
-        if (move.to_rank == 0 && move.to_file == 0) {
-            remove_castling_rights(BLACK_QUEENSIDE);
-        } else if (move.to_rank == 0 && move.to_file == 7) {
-            remove_castling_rights(BLACK_KINGSIDE);
-        }
-    }
-    
-    // Update en passant target (optimized)
-    if (std::tolower(move.piece) == 'p' && abs(move.to_rank - move.from_rank) == 2) {
-        // Pawn moved two squares, set en passant file
-        en_passant_file = move.from_file;
-    } else {
-        en_passant_file = -1;
-    }
-    
-    // Update halfmove clock
-    if (std::tolower(move.piece) == 'p' || move.captured_piece != '.') {
-        halfmove_clock = 0; // Reset on pawn move or capture
-    } else {
-        halfmove_clock++;
-    }
-    
-    // Update fullmove number
-    if (active_color == 'b') {
-        fullmove_number++;
-    }
-    
-    // Switch active color
-    active_color = (active_color == 'w') ? 'b' : 'w';
-    
-    return true;
-}
-
-// Make a move on the board with state capture for undo
-bool Board::make_move(const Move& move, BoardState& state) {
-    if (!is_valid_move(move)) {
-        return false;
-    }
-    
-    // Store current state for undo
-    state = get_board_state();
-    
-    // Store captured piece
-    if (move.is_en_passant) {
-        // For en passant, the captured piece is on a different square
-        int captured_rank = (active_color == 'w') ? move.to_rank + 1 : move.to_rank - 1;
-        state.captured_piece = get_piece(captured_rank, move.to_file);
-    } else {
-        state.captured_piece = get_piece(move.to_rank, move.to_file);
-    }
-    
-    // Handle special moves first
-    if (move.is_castling) {
-        // Castling: move king and rook
-        if (move.to_file == 6) { // Kingside castling
-            set_piece(move.from_rank, move.from_file, '.');
-            set_piece(move.to_rank, move.to_file, move.piece);
-            // Move rook
-            char rook = get_piece(move.from_rank, 7);
-            set_piece(move.from_rank, 7, '.');
-            set_piece(move.from_rank, 5, rook);
-        } else if (move.to_file == 2) { // Queenside castling
-            set_piece(move.from_rank, move.from_file, '.');
-            set_piece(move.to_rank, move.to_file, move.piece);
-            // Move rook
-            char rook = get_piece(move.from_rank, 0);
-            set_piece(move.from_rank, 0, '.');
-            set_piece(move.from_rank, 3, rook);
-        }
-    } else if (move.is_en_passant) {
-        // En passant: move pawn and remove captured pawn
-        set_piece(move.from_rank, move.from_file, '.');
-        set_piece(move.to_rank, move.to_file, move.piece);
-        // Remove captured pawn
-        int captured_rank = (active_color == 'w') ? move.to_rank + 1 : move.to_rank - 1;
-        set_piece(captured_rank, move.to_file, '.');
-    } else {
-        // Normal move
-        set_piece(move.from_rank, move.from_file, '.');
-        if (move.promotion_piece != '.') {
-            // Promotion
-            set_piece(move.to_rank, move.to_file, move.promotion_piece);
-        } else {
-            set_piece(move.to_rank, move.to_file, move.piece);
-        }
-    }
-    
-    // Update game state
-    
-    // Update castling rights (optimized with bitwise operations)
-    if (move.piece == 'K') {
-        // White king moved - remove all white castling rights
-        remove_castling_rights(WHITE_CASTLING);
-    } else if (move.piece == 'k') {
-        // Black king moved - remove all black castling rights
-        remove_castling_rights(BLACK_CASTLING);
-    } else if (move.piece == 'R') {
-        // White rook moved
-        if (move.from_rank == 7 && move.from_file == 0) {
-            remove_castling_rights(WHITE_QUEENSIDE);
-        } else if (move.from_rank == 7 && move.from_file == 7) {
-            remove_castling_rights(WHITE_KINGSIDE);
-        }
-    } else if (move.piece == 'r') {
-        // Black rook moved
-        if (move.from_rank == 0 && move.from_file == 0) {
-            remove_castling_rights(BLACK_QUEENSIDE);
-        } else if (move.from_rank == 0 && move.from_file == 7) {
-            remove_castling_rights(BLACK_KINGSIDE);
-        }
-    }
-    
-    // Check if rook was captured
-    if (state.captured_piece == 'R') {
-        if (move.to_rank == 7 && move.to_file == 0) {
-            remove_castling_rights(WHITE_QUEENSIDE);
-        } else if (move.to_rank == 7 && move.to_file == 7) {
-            remove_castling_rights(WHITE_KINGSIDE);
-        }
-    } else if (state.captured_piece == 'r') {
-        if (move.to_rank == 0 && move.to_file == 0) {
-            remove_castling_rights(BLACK_QUEENSIDE);
-        } else if (move.to_rank == 0 && move.to_file == 7) {
-            remove_castling_rights(BLACK_KINGSIDE);
-        }
-    }
-    
-    // Update en passant target (optimized)
-    if (std::tolower(move.piece) == 'p' && abs(move.to_rank - move.from_rank) == 2) {
-        // Pawn moved two squares, set en passant file
-        en_passant_file = move.from_file;
-    } else {
-        en_passant_file = -1;
-    }
-    
-    // Update halfmove clock
-    if (std::tolower(move.piece) == 'p' || state.captured_piece != '.') {
-        halfmove_clock = 0; // Reset on pawn move or capture
-    } else {
-        halfmove_clock++;
-    }
-    
-    // Update fullmove number
-    if (active_color == 'b') {
-        fullmove_number++;
-    }
-    
-    // Switch active color
-    active_color = (active_color == 'w') ? 'b' : 'w';
-    
-    return true;
-}
-
-// Undo a move (optimized)
-void Board::undo_move(const Move& move, const BoardState& state) {
-    // Restore game state (optimized)
-    active_color = state.active_color;
-    castling_rights_bits = state.castling_rights_bits;
-    en_passant_file = state.en_passant_file;
-    halfmove_clock = state.halfmove_clock;
-    fullmove_number = state.fullmove_number;
-    
-    // Undo the move on the board
-    if (move.is_castling) {
-        // Undo castling: move king and rook back
-        if (move.to_file == 6) { // Kingside castling
-            set_piece(move.to_rank, move.to_file, '.');
-            set_piece(move.from_rank, move.from_file, move.piece);
-            // Move rook back
-            char rook = get_piece(move.from_rank, 5);
-            set_piece(move.from_rank, 5, '.');
-            set_piece(move.from_rank, 7, rook);
-        } else if (move.to_file == 2) { // Queenside castling
-            set_piece(move.to_rank, move.to_file, '.');
-            set_piece(move.from_rank, move.from_file, move.piece);
-            // Move rook back
-            char rook = get_piece(move.from_rank, 3);
-            set_piece(move.from_rank, 3, '.');
-            set_piece(move.from_rank, 0, rook);
-        }
-    } else if (move.is_en_passant) {
-        // Undo en passant: move pawn back and restore captured pawn
-        set_piece(move.to_rank, move.to_file, '.');
-        set_piece(move.from_rank, move.from_file, move.piece);
-        // Restore captured pawn
-        int captured_rank = (state.active_color == 'w') ? move.to_rank + 1 : move.to_rank - 1;
-        set_piece(captured_rank, move.to_file, state.captured_piece);
-    } else {
-        // Undo normal move
-        set_piece(move.to_rank, move.to_file, state.captured_piece);
-        set_piece(move.from_rank, move.from_file, move.piece);
-    }
-}
-
-// Get current board state for undo (optimized)
-Board::BoardState Board::get_board_state() const {
-    BoardState state;
-    state.active_color = active_color;
-    state.castling_rights_bits = castling_rights_bits;
-    state.en_passant_file = en_passant_file;
-    state.halfmove_clock = halfmove_clock;
-    state.fullmove_number = fullmove_number;
-    state.captured_piece = '.';
-    return state;
+bool Board::is_legal_move(const Move& move) {
+    std::vector<Move> legal_moves = MoveGenerator::generate_legal_moves(*this);
+    return std::any_of(legal_moves.begin(), legal_moves.end(), [&](const Move& m) {
+        return m == move;
+    });
 }
 
 // Create move from algebraic notation (e.g., "e2e4", "e7e8q")
@@ -585,3 +291,240 @@ Move Board::create_move_from_algebraic(std::string_view algebraic) const {
     return Move(from_rank, from_file, to_rank, to_file, piece, captured_piece, 
                 promotion_piece, is_castling, is_en_passant);
 }
+
+// Make a move on the board
+bool Board::make_move(const Move& move) {
+    // Save everything needed for undo
+    MoveUndoData undo_data;
+    undo_data.active_color = active_color;
+    undo_data.castling_rights_bits = castling_rights_bits;
+    undo_data.en_passant_file = en_passant_file;
+    undo_data.halfmove_clock = halfmove_clock;
+    undo_data.fullmove_number = fullmove_number;
+    undo_data.move = move;
+    undo_data.was_castling = move.is_castling;
+    undo_data.was_en_passant = move.is_en_passant;
+    undo_data.promotion_piece = move.promotion_piece;
+    
+    // Store captured piece
+    if (move.is_en_passant) {
+        int captured_rank = (active_color == 'w') ? move.to_rank + 1 : move.to_rank - 1;
+        undo_data.captured_piece = get_piece(captured_rank, move.to_file);
+    } else {
+        undo_data.captured_piece = get_piece(move.to_rank, move.to_file);
+    }
+    
+    // Apply the move (including castling, en passant, etc.)
+    apply_move(move);
+    
+    // Check if move is legal (king not in check)
+    bool legal = !MoveGenerator::is_in_check(*this, (undo_data.active_color == 'w') ? 'b' : 'w');
+    
+    if (!legal) {
+        // Restore board state
+        undo_move(undo_data);
+    }
+    
+    return legal;
+}
+
+// New make_move function with MoveUndoData
+bool Board::make_move(const Move& move, MoveUndoData& undo_data) {
+    // Save everything needed for undo
+    undo_data.active_color = active_color;
+    undo_data.castling_rights_bits = castling_rights_bits;
+    undo_data.en_passant_file = en_passant_file;
+    undo_data.halfmove_clock = halfmove_clock;
+    undo_data.fullmove_number = fullmove_number;
+    undo_data.move = move;
+    undo_data.was_castling = move.is_castling;
+    undo_data.was_en_passant = move.is_en_passant;
+    undo_data.promotion_piece = move.promotion_piece;
+    
+    // Store captured piece
+    if (move.is_en_passant) {
+        int captured_rank = (active_color == 'w') ? move.to_rank + 1 : move.to_rank - 1;
+        undo_data.captured_piece = get_piece(captured_rank, move.to_file);
+    } else {
+        undo_data.captured_piece = get_piece(move.to_rank, move.to_file);
+    }
+    
+    // Apply the move (including castling, en passant, etc.)
+    apply_move(move);
+
+    // TODO: this does not have to check for checks in every move, filter them before checking.
+    // Check if move is legal (king not in check)
+    bool legal = !MoveGenerator::is_in_check(*this, (undo_data.active_color == 'w') ? 'b' : 'w');
+    
+    if (!legal) {
+        // Restore board state
+        undo_move(undo_data);
+        return false;
+    }
+    
+    return true;
+}
+
+// New undo_move function with MoveUndoData
+void Board::undo_move(const MoveUndoData& undo_data) {
+    const Move& move = undo_data.move;
+    
+    // Reverse the piece movements based on move type
+    if (undo_data.was_castling) {
+        // Undo castling: move king and rook back
+        if (move.to_file == 6) { // Kingside castling
+            // Move king back
+            set_piece(move.from_rank, move.from_file, move.piece);
+            set_piece(move.to_rank, move.to_file, '.');
+            // Move rook back
+            char rook = get_piece(move.from_rank, 5);
+            set_piece(move.from_rank, 5, '.');
+            set_piece(move.from_rank, 7, rook);
+        } else if (move.to_file == 2) { // Queenside castling
+            // Move king back
+            set_piece(move.from_rank, move.from_file, move.piece);
+            set_piece(move.to_rank, move.to_file, '.');
+            // Move rook back
+            char rook = get_piece(move.from_rank, 3);
+            set_piece(move.from_rank, 3, '.');
+            set_piece(move.from_rank, 0, rook);
+        }
+    } else if (undo_data.was_en_passant) {
+        // Undo en passant: move pawn back and restore captured pawn
+        set_piece(move.from_rank, move.from_file, move.piece);
+        set_piece(move.to_rank, move.to_file, '.');
+        // Restore captured pawn
+        int captured_rank = (undo_data.active_color == 'w') ? move.to_rank + 1 : move.to_rank - 1;
+        set_piece(captured_rank, move.to_file, undo_data.captured_piece);
+    } else {
+        // Undo normal move or promotion
+        if (undo_data.promotion_piece != '.') {
+            // Undo promotion: restore original pawn
+            set_piece(move.from_rank, move.from_file, move.piece);
+        } else {
+            // Undo normal move: move piece back
+            char piece_on_to_square = get_piece(move.to_rank, move.to_file);
+            set_piece(move.from_rank, move.from_file, piece_on_to_square);
+        }
+        
+        // Restore captured piece (if any)
+        set_piece(move.to_rank, move.to_file, undo_data.captured_piece);
+    }
+    
+    // Restore game state
+    active_color = undo_data.active_color;
+    castling_rights_bits = undo_data.castling_rights_bits;
+    en_passant_file = undo_data.en_passant_file;
+    halfmove_clock = undo_data.halfmove_clock;
+    fullmove_number = undo_data.fullmove_number;
+}
+
+// Helper function to apply move without legality check
+void Board::apply_move(const Move& move) {
+    // Handle special moves first
+    if (move.is_castling) {
+        // Castling: move king and rook
+        if (move.to_file == 6) { // Kingside castling
+            set_piece(move.from_rank, move.from_file, '.');
+            set_piece(move.to_rank, move.to_file, move.piece);
+            // Move rook
+            char rook = get_piece(move.from_rank, 7);
+            set_piece(move.from_rank, 7, '.');
+            set_piece(move.from_rank, 5, rook);
+        } else if (move.to_file == 2) { // Queenside castling
+            set_piece(move.from_rank, move.from_file, '.');
+            set_piece(move.to_rank, move.to_file, move.piece);
+            // Move rook
+            char rook = get_piece(move.from_rank, 0);
+            set_piece(move.from_rank, 0, '.');
+            set_piece(move.from_rank, 3, rook);
+        }
+    } else if (move.is_en_passant) {
+        // En passant: move pawn and remove captured pawn
+        set_piece(move.from_rank, move.from_file, '.');
+        set_piece(move.to_rank, move.to_file, move.piece);
+        // Remove captured pawn
+        int captured_rank = (active_color == 'w') ? move.to_rank + 1 : move.to_rank - 1;
+        set_piece(captured_rank, move.to_file, '.');
+    } else {
+        // Normal move
+        set_piece(move.from_rank, move.from_file, '.');
+        if (move.promotion_piece != '.') {
+            // Promotion
+            set_piece(move.to_rank, move.to_file, move.promotion_piece);
+        } else {
+            set_piece(move.to_rank, move.to_file, move.piece);
+        }
+    }
+    
+    // Update game state
+    char captured = (move.is_en_passant) ? 
+        get_piece((active_color == 'w') ? move.to_rank + 1 : move.to_rank - 1, move.to_file) :
+        get_piece(move.to_rank, move.to_file);
+    
+    // Update castling rights (optimized with bitwise operations)
+    if (move.piece == 'K') {
+        // White king moved - remove all white castling rights
+        remove_castling_rights(WHITE_CASTLING);
+    } else if (move.piece == 'k') {
+        // Black king moved - remove all black castling rights
+        remove_castling_rights(BLACK_CASTLING);
+    } else if (move.piece == 'R') {
+        // White rook moved
+        if (move.from_rank == 7 && move.from_file == 0) {
+            remove_castling_rights(WHITE_QUEENSIDE);
+        } else if (move.from_rank == 7 && move.from_file == 7) {
+            remove_castling_rights(WHITE_KINGSIDE);
+        }
+    } else if (move.piece == 'r') {
+        // Black rook moved
+        if (move.from_rank == 0 && move.from_file == 0) {
+            remove_castling_rights(BLACK_QUEENSIDE);
+        } else if (move.from_rank == 0 && move.from_file == 7) {
+            remove_castling_rights(BLACK_KINGSIDE);
+        }
+    }
+    
+    // Check if rook was captured (use the captured piece from before the move)
+    if (captured == 'R') {
+        if (move.to_rank == 7 && move.to_file == 0) {
+            remove_castling_rights(WHITE_QUEENSIDE);
+        } else if (move.to_rank == 7 && move.to_file == 7) {
+            remove_castling_rights(WHITE_KINGSIDE);
+        }
+    } else if (captured == 'r') {
+        if (move.to_rank == 0 && move.to_file == 0) {
+            remove_castling_rights(BLACK_QUEENSIDE);
+        } else if (move.to_rank == 0 && move.to_file == 7) {
+            remove_castling_rights(BLACK_KINGSIDE);
+        }
+    }
+    
+    // Update en passant target (optimized)
+    if (std::tolower(move.piece) == 'p' && abs(move.to_rank - move.from_rank) == 2) {
+        // Pawn moved two squares, set en passant file
+        en_passant_file = move.from_file;
+    } else {
+        en_passant_file = -1;
+    }
+    
+    // Update halfmove clock
+    if (std::tolower(move.piece) == 'p' || move.captured_piece != '.') {
+        halfmove_clock = 0; // Reset on pawn move or capture
+    } else {
+        halfmove_clock++;
+    }
+    
+    // Update fullmove number
+    if (active_color == 'b') {
+        fullmove_number++;
+    }
+    
+    // Switch active color
+    active_color = (active_color == 'w') ? 'b' : 'w';
+}
+
+// IMPORTANT NOTE:
+// Probably the search will function the by checking the full list of moves. (in the first phase before pruning)
+// So there might be a need to create an apply_move() function that takes the move and the undo_data as parameters for undoing.
+// It does not need to check legality, just apply the move to the board state.

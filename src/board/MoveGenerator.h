@@ -38,10 +38,10 @@ public:
     static MoveList generate_pseudo_legal_moves(const Board& board);
     
     // Generate all legal moves (filtering out moves that leave king in check)
-    static MoveList generate_legal_moves(const Board& board);
+    static MoveList generate_legal_moves(Board& board);
     
     // Check if a move is legal (doesn't leave own king in check)
-    static bool is_legal_move(const Board& board, const Move& move);
+    static bool is_legal_move(Board& board, const Move& move);
     
     // Check if the current player's king is in check
     static bool is_in_check(const Board& board, char color);
@@ -87,11 +87,11 @@ private:
         return (rank | file) >= 0 && (rank | file) < 8;
     }
     
-    // Helper function to find the king position
+    // Helper functions
+    static void perform_castling_rook_move(Board& board, const Move& move, 
+                                         int& rook_from_file, int& rook_to_file,
+                                         char& original_rook_from, char& original_rook_to);
     static std::pair<int, int> find_king_position(const Board& board, char color);
-    
-    // Helper function to make a move on a temporary board for legality checking
-    static Board make_move_on_copy(const Board& board, const Move& move);
 };
 
 #endif // MOVEGENERATOR_H
