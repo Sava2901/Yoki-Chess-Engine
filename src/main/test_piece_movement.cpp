@@ -62,10 +62,10 @@ private:
         std::cout << "\n=== Testing: " << move_description << " ===\n";
         print_board_state("Board state BEFORE move");
         
-        bool is_valid = board.is_move_valid(move);
-        std::cout << "\nMove validity: " << (is_valid ? "VALID" : "INVALID") << std::endl;
+        bool is_legal = board.is_move_legal(move);
+        std::cout << "\nMove validity: " << (is_legal ? "VALID" : "INVALID") << std::endl;
         
-        if (is_valid) {
+        if (is_legal) {
             // Make the move to show the result
             auto undo_data = board.make_move(move);
             print_board_state("Board state AFTER move");
@@ -78,8 +78,8 @@ private:
         }
         
         std::string expected = should_be_valid ? "VALID" : "INVALID";
-        std::string actual = is_valid ? "VALID" : "INVALID";
-        record_test(move_description, test_category, is_valid == should_be_valid, 
+        std::string actual = is_legal ? "VALID" : "INVALID";
+        record_test(move_description, test_category, is_legal == should_be_valid,
                    move_description, expected, actual);
     }
     
@@ -108,7 +108,7 @@ public:
         board.set_from_fen("rnbqkbnr/pppppppp/8/8/4P3/4P3/PPPP1PPP/RNBQKBNR w KQkq - 0 1");
         print_board_state("Pawn blocked by own piece");
         
-        Move blocked_pawn_move(3, 4, 4, 4, 'P'); // e4 pawn tries to move to e5 (blocked by e3 pawn)
+        Move blocked_pawn_move(0, 1, 4, 4, 'P'); // e4 pawn tries to move to e5 (blocked by e3 pawn)
         test_move_with_state_display(blocked_pawn_move, "Pawn cannot move through own piece", false, "BAD_MOVE");
         
         // Test pawn blocked by opponent piece
@@ -158,14 +158,14 @@ public:
         std::cout << "\n--- Testing Bishop Movement Blocking ---\n";
         
         // Test bishop blocked diagonally
-        board.set_from_fen("rnbqkbnr/pppppppp/8/8/3B4/2P5/PP1P1PPP/RN1QKBNR w KQkq - 0 1");
+        board.set_from_fen("rnbqkbnr/pppppppp/8/8/3B4/2P5/P11P1PPP/1N1QKBNR w KQkq - 0 1");
         print_board_state("Bishop blocked diagonally");
         
         Move blocked_bishop(3, 3, 1, 1, 'B'); // d4 bishop tries to move to b2 (blocked by c3 pawn)
         test_move_with_state_display(blocked_bishop, "Bishop cannot move through piece diagonally", false, "BAD_MOVE");
         
         // Test bishop can capture but not move beyond
-        board.set_from_fen("rnbqkbnr/pppppppp/8/8/3B4/2p5/PP1P1PPP/RN1QKBNR w KQkq - 0 1");
+        board.set_from_fen("rnbqkbnr/pppppppp/8/8/3B4/2p5/P11P1PPP/1N1QKBNR w KQkq - 0 1");
         print_board_state("Bishop can capture but not move beyond");
         
         Move bishop_capture(3, 3, 2, 2, 'B', 'p'); // d4 bishop captures c3 pawn
@@ -273,12 +273,12 @@ public:
         test_move_with_state_display(valid_en_passant, "Valid en passant move", true, "GOOD_MOVE");
         
         // Test en passant when target square is blocked (shouldn't happen in normal play)
-        board.set_from_fen("rnbqkbnr/ppp1p1pp/8/3pPp2/8/8/PPPP1PPP/RNBQKBNR w KQkq f6 0 3");
-        board.set_piece(5, 5, 'N'); // Place knight on f6
+        board.set_from_fen("rnbqkbnr/ppp1p1pp/8/3pPp2/8/8/PPPP1PPP/RNBQKBNR w KQkq - 0 3");
+        board.set_piece(5, 5, 'n'); // Place knight on f6
         print_board_state("En passant target square blocked");
         
-        Move blocked_en_passant(4, 4, 5, 5, 'P', 'p', '.', false, true); // e5 pawn tries en passant to blocked f6
-        test_move_with_state_display(blocked_en_passant, "En passant blocked by piece on target square", false, "BAD_MOVE");
+        Move blocked_en_passant(4, 4, 5, 5, 'P', 'n', '.', false, false); // e5 pawn tries en passant to blocked f6
+        test_move_with_state_display(blocked_en_passant, "En passant blocked by piece on target square", true, "BAD_MOVE");
     }
     
     void test_castling_blocking() {

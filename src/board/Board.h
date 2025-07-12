@@ -53,6 +53,9 @@ private:
     // King positions for quick access
     std::array<int, NUM_COLORS> king_positions{};
     
+    // Piece mailbox for O(1) square access
+    char piece_mailbox[64];
+    
 public:
     Board();
     

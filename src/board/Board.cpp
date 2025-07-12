@@ -5,6 +5,63 @@
 #include <algorithm>
 #include "MoveGenerator.h"
 
+// Castling lookup tables
+static const int CASTLING_ROOK_FROM[2] = {7, 0}; // [kingside, queenside]
+static const int CASTLING_ROOK_TO[2] = {5, 3};
+
+// Lookup table for char to piece type conversion
+static Board::PieceType CHAR_TO_PIECE_LOOKUP[256];
+static bool char_lookup_initialized = false;
+
+// Castling rights masks for square-based updates
+static uint8_t CASTLING_RIGHTS_MASK[64];
+static bool castling_mask_initialized = false;
+
+void init_char_lookup() {
+    if (char_lookup_initialized) return;
+    
+    // Initialize all to PAWN as default
+    for (int i = 0; i < 256; i++) {
+        CHAR_TO_PIECE_LOOKUP[i] = Board::PAWN;
+    }
+    
+    // Set specific mappings
+    CHAR_TO_PIECE_LOOKUP['p'] = Board::PAWN;
+    CHAR_TO_PIECE_LOOKUP['P'] = Board::PAWN;
+    CHAR_TO_PIECE_LOOKUP['n'] = Board::KNIGHT;
+    CHAR_TO_PIECE_LOOKUP['N'] = Board::KNIGHT;
+    CHAR_TO_PIECE_LOOKUP['b'] = Board::BISHOP;
+    CHAR_TO_PIECE_LOOKUP['B'] = Board::BISHOP;
+    CHAR_TO_PIECE_LOOKUP['r'] = Board::ROOK;
+    CHAR_TO_PIECE_LOOKUP['R'] = Board::ROOK;
+    CHAR_TO_PIECE_LOOKUP['q'] = Board::QUEEN;
+    CHAR_TO_PIECE_LOOKUP['Q'] = Board::QUEEN;
+    CHAR_TO_PIECE_LOOKUP['k'] = Board::KING;
+    CHAR_TO_PIECE_LOOKUP['K'] = Board::KING;
+    
+    char_lookup_initialized = true;
+}
+
+void init_castling_mask() {
+    if (castling_mask_initialized) return;
+    
+    // Initialize all squares to preserve all rights
+    for (int i = 0; i < 64; i++) {
+        CASTLING_RIGHTS_MASK[i] = 0xFF;
+    }
+    
+    // Set masks for specific squares
+    // Castling rights bits: 0x01=White kingside, 0x02=White queenside, 0x04=Black kingside, 0x08=Black queenside
+    CASTLING_RIGHTS_MASK[0] = ~0x02;  // a1 - White queenside rook
+    CASTLING_RIGHTS_MASK[7] = ~0x01;  // h1 - White kingside rook
+    CASTLING_RIGHTS_MASK[56] = ~0x08; // a8 - Black queenside rook
+    CASTLING_RIGHTS_MASK[63] = ~0x04; // h8 - Black kingside rook
+    CASTLING_RIGHTS_MASK[4] = ~0x03;  // e1 - White king (both White castling rights)
+    CASTLING_RIGHTS_MASK[60] = ~0x0C; // e8 - Black king (both Black castling rights)
+    
+    castling_mask_initialized = true;
+}
+
 Board::Board() {
     // Initialize bitboards to empty
     for (int color = 0; color < NUM_COLORS; color++) {
@@ -22,8 +79,19 @@ Board::Board() {
     halfmove_clock = 0;
     fullmove_number = 1;
     
+    // Initialize piece mailbox
+    for (int i = 0; i < 64; i++) {
+        piece_mailbox[i] = '.';
+    }
+    
     // Initialize bitboard utilities if not already done
     BitboardUtils::init();
+    
+    // Initialize castling mask
+    init_castling_mask();
+    
+    // Initialize character lookup
+    init_char_lookup();
 }
 
 void Board::set_starting_position() {
@@ -40,6 +108,11 @@ void Board::set_from_fen(const std::string& fen) {
         king_positions[color] = -1;
     }
     all_pieces = 0;
+    
+    // Clear piece mailbox
+    for (int i = 0; i < 64; i++) {
+        piece_mailbox[i] = '.';
+    }
     
     std::istringstream iss(fen);
     std::string board_part, active_color_part, castling_part, en_passant_part;
@@ -97,7 +170,8 @@ std::string Board::to_fen() const {
     for (int rank = 7; rank >= 0; rank--) {
         int empty_count = 0;
         for (int file = 0; file < 8; file++) {
-            char piece = get_piece(rank, file);
+            int square = BitboardUtils::square_index(rank, file);
+            char piece = piece_mailbox[square];  // Direct access instead of get_piece()
             if (piece == '.') {
                 empty_count++;
             } else {
@@ -146,8 +220,10 @@ std::string Board::to_fen() const {
 void Board::set_piece(int rank, int file, char piece) {
     int square = BitboardUtils::square_index(rank, file);
     
-    // Clear the square first
-    clear_square(square);
+    // Only clear if square is not already empty
+    if (piece_mailbox[square] != '.') {
+        clear_square(square);
+    }
     
     // Place the new piece if it's not empty
     if (piece != '.') {
@@ -159,29 +235,23 @@ void Board::set_piece(int rank, int file, char piece) {
 
 char Board::get_piece(int rank, int file) const {
     int square = BitboardUtils::square_index(rank, file);
-    
-    for (int color = 0; color < NUM_COLORS; color++) {
-        for (int piece = 0; piece < NUM_PIECE_TYPES; piece++) {
-            if (BitboardUtils::get_bit(piece_bitboards[color][piece], square)) {
-                return piece_to_char(static_cast<PieceType>(piece), static_cast<Color>(color));
-            }
-        }
-    }
-    
-    return '.';
+    return piece_mailbox[square];
 }
 
 void Board::clear_square(int square) {
-    for (int color = 0; color < NUM_COLORS; color++) {
-        for (int piece = 0; piece < NUM_PIECE_TYPES; piece++) {
-            BitboardUtils::clear_bit(piece_bitboards[color][piece], square);
-        }
+    char piece = piece_mailbox[square];
+    if (piece != '.') {
+        PieceType piece_type = char_to_piece_type(piece);
+        Color color = char_to_color(piece);
+        BitboardUtils::clear_bit(piece_bitboards[color][piece_type], square);
+        piece_mailbox[square] = '.';
+        update_combined_bitboards();
     }
-    update_combined_bitboards();
 }
 
 void Board::place_piece(int square, PieceType piece_type, Color color) {
     BitboardUtils::set_bit(piece_bitboards[color][piece_type], square);
+    piece_mailbox[square] = piece_to_char(piece_type, color);
     
     if (piece_type == KING) {
         king_positions[color] = square;
@@ -260,20 +330,8 @@ bool Board::is_move_legal(const Move& move) {
 }
 
 BitboardMoveUndoData Board::make_move(const Move& move) {
-    if (!is_move_legal(move)) {
-        return {}; // Invalid move, return empty undo data
-    }
-
-    BitboardMoveUndoData undo_data;
-    undo_data.move = move;
-    undo_data.captured_piece = move.captured_piece;
-    undo_data.castling_rights = castling_rights;
-    undo_data.en_passant_file = en_passant_file;
-    undo_data.halfmove_clock = halfmove_clock;
-
-    apply_move(move);
-
-    return undo_data;
+    if (!is_move_legal(move)) return {};
+    return apply_move(move);
 }
 
 BitboardMoveUndoData Board::apply_move(const Move& move) {
@@ -288,7 +346,7 @@ BitboardMoveUndoData Board::apply_move(const Move& move) {
     int from_square = BitboardUtils::square_index(move.from_rank, move.from_file);
     int to_square = BitboardUtils::square_index(move.to_rank, move.to_file);
     
-    // Find the piece being moved
+    // Cache piece type and color lookups
     PieceType moving_piece_type = char_to_piece_type(move.piece);
     Color moving_color = char_to_color(move.piece);
     Color opponent_color = (moving_color == WHITE) ? BLACK : WHITE;
@@ -298,17 +356,24 @@ BitboardMoveUndoData Board::apply_move(const Move& move) {
         undo_data.captured_piece = get_piece(move.to_rank, move.to_file);
     }
     
-    // Remove piece from source square
+    // Clear source square from mailbox
+    piece_mailbox[from_square] = '.';
+    
+    // Remove piece from source square bitboard
     BitboardUtils::clear_bit(piece_bitboards[moving_color][moving_piece_type], from_square);
     
-    // Handle en passant capture
+    // Handle captures
     if (move.is_en_passant) {
+        // En passant capture - remove the captured pawn
         int captured_pawn_rank = (moving_color == WHITE) ? move.to_rank - 1 : move.to_rank + 1;
         int captured_pawn_square = BitboardUtils::square_index(captured_pawn_rank, move.to_file);
         BitboardUtils::clear_bit(piece_bitboards[opponent_color][PAWN], captured_pawn_square);
-    } else {
-        // Clear destination square for normal captures
-        clear_square(to_square);
+        piece_mailbox[captured_pawn_square] = '.';
+    } else if (undo_data.captured_piece != '.') {
+        // Normal capture - remove captured piece from destination square
+        PieceType captured_piece_type = char_to_piece_type(undo_data.captured_piece);
+        Color captured_color = char_to_color(undo_data.captured_piece);
+        BitboardUtils::clear_bit(piece_bitboards[captured_color][captured_piece_type], to_square);
     }
     
     // Place piece on destination square
@@ -316,8 +381,10 @@ BitboardMoveUndoData Board::apply_move(const Move& move) {
         // Handle promotion
         PieceType promotion_type = char_to_piece_type(move.promotion_piece);
         BitboardUtils::set_bit(piece_bitboards[moving_color][promotion_type], to_square);
+        piece_mailbox[to_square] = move.promotion_piece;
     } else {
         BitboardUtils::set_bit(piece_bitboards[moving_color][moving_piece_type], to_square);
+        piece_mailbox[to_square] = move.piece;
     }
     
     // Update king position if king moved
@@ -327,68 +394,27 @@ BitboardMoveUndoData Board::apply_move(const Move& move) {
     
     // Handle castling
     if (move.is_castling) {
-        int rook_from_file, rook_to_file;
-        if (move.to_file == 6) { // Kingside
-            rook_from_file = 7;
-            rook_to_file = 5;
-        } else { // Queenside
-            rook_from_file = 0;
-            rook_to_file = 3;
-        }
-        
-        int rook_from_square = BitboardUtils::square_index(move.from_rank, rook_from_file);
-        int rook_to_square = BitboardUtils::square_index(move.from_rank, rook_to_file);
+        int castling_side = (move.to_file == 6) ? 0 : 1; // 0=kingside, 1=queenside
+        int rook_from_square = BitboardUtils::square_index(move.from_rank, CASTLING_ROOK_FROM[castling_side]);
+        int rook_to_square = BitboardUtils::square_index(move.from_rank, CASTLING_ROOK_TO[castling_side]);
         
         BitboardUtils::clear_bit(piece_bitboards[moving_color][ROOK], rook_from_square);
         BitboardUtils::set_bit(piece_bitboards[moving_color][ROOK], rook_to_square);
+        piece_mailbox[rook_from_square] = '.';
+        piece_mailbox[rook_to_square] = piece_to_char(ROOK, moving_color);
     }
     
-    // Update castling rights
-    // King moves remove all castling rights for that color
-    if (moving_piece_type == KING) {
-        if (moving_color == WHITE) {
-            castling_rights &= ~0x03; // Clear white castling rights
-        } else {
-            castling_rights &= ~0x0C; // Clear black castling rights
-        }
-    }
-    // Rook moves remove castling rights for that side
-    else if (moving_piece_type == ROOK) {
-        if (moving_color == WHITE) {
-            if (move.from_file == 0) castling_rights &= ~0x02; // White queenside
-            if (move.from_file == 7) castling_rights &= ~0x01; // White kingside
-        } else {
-            if (move.from_file == 0) castling_rights &= ~0x08; // Black queenside
-            if (move.from_file == 7) castling_rights &= ~0x04; // Black kingside
-        }
-    }
-    // Captures of rooks remove castling rights
-    if (undo_data.captured_piece != '.') {
-        PieceType captured_type = char_to_piece_type(undo_data.captured_piece);
-        if (captured_type == ROOK) {
-            if (move.to_rank == 0) { // Black back rank
-                if (move.to_file == 0) castling_rights &= ~0x08; // Black queenside
-                if (move.to_file == 7) castling_rights &= ~0x04; // Black kingside
-            } else if (move.to_rank == 7) { // White back rank
-                if (move.to_file == 0) castling_rights &= ~0x02; // White queenside
-                if (move.to_file == 7) castling_rights &= ~0x01; // White kingside
-            }
-        }
-    }
+    // Update castling rights using lookup table
+    castling_rights &= CASTLING_RIGHTS_MASK[from_square];
+    castling_rights &= CASTLING_RIGHTS_MASK[to_square];
     
-    // Update en passant file
-    if (moving_piece_type == PAWN && abs(move.to_rank - move.from_rank) == 2) {
-        en_passant_file = move.from_file;
-    } else {
-        en_passant_file = -1;
-    }
+    // Update en passant file (branchless)
+    bool is_double_pawn_move = (moving_piece_type == PAWN) && (abs(move.to_rank - move.from_rank) == 2);
+    en_passant_file = is_double_pawn_move ? move.from_file : -1;
     
-    // Update halfmove clock
-    if (moving_piece_type == PAWN || undo_data.captured_piece != '.') {
-        halfmove_clock = 0; // Reset on pawn move or capture
-    } else {
-        halfmove_clock++;
-    }
+    // Update halfmove clock (branchless)
+    bool reset_halfmove = (moving_piece_type == PAWN) || (undo_data.captured_piece != '.');
+    halfmove_clock = reset_halfmove ? 0 : halfmove_clock + 1;
     
     // Update fullmove number
     if (active_color == BLACK) {
@@ -421,27 +447,22 @@ void Board::undo_move(const BitboardMoveUndoData& undo_data) {
     int from_square = BitboardUtils::square_index(move.from_rank, move.from_file);
     int to_square = BitboardUtils::square_index(move.to_rank, move.to_file);
     
+    // Cache piece type and color lookups
     PieceType moving_piece_type = char_to_piece_type(move.piece);
     Color moving_color = char_to_color(move.piece);
     Color opponent_color = (moving_color == WHITE) ? BLACK : WHITE;
     
     // Handle castling undo
     if (move.is_castling) {
-        int rook_from_file, rook_to_file;
-        if (move.to_file == 6) { // Kingside
-            rook_from_file = 7;
-            rook_to_file = 5;
-        } else { // Queenside
-            rook_from_file = 0;
-            rook_to_file = 3;
-        }
-        
-        int rook_from_square = BitboardUtils::square_index(move.from_rank, rook_from_file);
-        int rook_to_square = BitboardUtils::square_index(move.from_rank, rook_to_file);
+        int castling_side = (move.to_file == 6) ? 0 : 1; // 0=kingside, 1=queenside
+        int rook_from_square = BitboardUtils::square_index(move.from_rank, CASTLING_ROOK_FROM[castling_side]);
+        int rook_to_square = BitboardUtils::square_index(move.from_rank, CASTLING_ROOK_TO[castling_side]);
         
         // Move rook back
         BitboardUtils::clear_bit(piece_bitboards[moving_color][ROOK], rook_to_square);
         BitboardUtils::set_bit(piece_bitboards[moving_color][ROOK], rook_from_square);
+        piece_mailbox[rook_to_square] = '.';
+        piece_mailbox[rook_from_square] = piece_to_char(ROOK, moving_color);
     }
     
     // Remove piece from destination square
@@ -455,6 +476,8 @@ void Board::undo_move(const BitboardMoveUndoData& undo_data) {
     
     // Place piece back on source square
     BitboardUtils::set_bit(piece_bitboards[moving_color][moving_piece_type], from_square);
+    piece_mailbox[from_square] = move.piece;
+    piece_mailbox[to_square] = '.';
     
     // Update king position if king moved
     if (moving_piece_type == KING) {
@@ -467,11 +490,13 @@ void Board::undo_move(const BitboardMoveUndoData& undo_data) {
         int captured_pawn_rank = (moving_color == WHITE) ? move.to_rank - 1 : move.to_rank + 1;
         int captured_pawn_square = BitboardUtils::square_index(captured_pawn_rank, move.to_file);
         BitboardUtils::set_bit(piece_bitboards[opponent_color][PAWN], captured_pawn_square);
+        piece_mailbox[captured_pawn_square] = piece_to_char(PAWN, opponent_color);
     } else if (undo_data.captured_piece != '.') {
         // Restore normally captured piece
         PieceType captured_type = char_to_piece_type(undo_data.captured_piece);
         Color captured_color = char_to_color(undo_data.captured_piece);
         BitboardUtils::set_bit(piece_bitboards[captured_color][captured_type], to_square);
+        piece_mailbox[to_square] = undo_data.captured_piece;
         
         // Update king position if captured piece was a king (shouldn't happen in normal play)
         if (captured_type == KING) {
@@ -505,7 +530,9 @@ std::string Board::to_string() const {
     for (int rank = 7; rank >= 0; rank--) {
         oss << (rank + 1) << " ";
         for (int file = 0; file < 8; file++) {
-            oss << get_piece(rank, file) << " ";
+            int square = BitboardUtils::square_index(rank, file);
+            char piece = piece_mailbox[square];  // Direct access instead of get_piece()
+            oss << piece << " ";
         }
         oss << (rank + 1) << "\n";
     }
@@ -517,15 +544,8 @@ std::string Board::to_string() const {
 }
 
 Board::PieceType Board::char_to_piece_type(char piece) {
-    switch (std::tolower(piece)) {
-        case 'p': return PAWN;
-        case 'n': return KNIGHT;
-        case 'b': return BISHOP;
-        case 'r': return ROOK;
-        case 'q': return QUEEN;
-        case 'k': return KING;
-        default: return PAWN; // Should not happen
-    }
+    init_char_lookup(); // Ensure lookup table is initialized
+    return CHAR_TO_PIECE_LOOKUP[static_cast<unsigned char>(piece)];
 }
 
 Board::Color Board::char_to_color(char piece) {

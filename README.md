@@ -1,5 +1,7 @@
 # Yoki Chess Engine
 
+TODO: (Research and Improvements to make) Study the difference between range based loops and iterators in C++ for performance optimization.
+
 A high-performance, modular C++ chess engine designed for CLI invocation in web backends. The engine implements the UCI (Universal Chess Interface) protocol and provides both a chess engine binary and a move validation utility.
 
 ## Features
