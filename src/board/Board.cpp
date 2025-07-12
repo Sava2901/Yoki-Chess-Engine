@@ -2,6 +2,8 @@
 #include <iostream>
 #include <sstream>
 #include <cctype>
+#include <algorithm>
+#include "MoveGenerator.h"
 
 Board::Board() {
     // Initialize bitboards to empty
@@ -200,9 +202,88 @@ Bitboard Board::get_all_pieces() const {
     return all_pieces;
 }
 
-bool Board::make_move(const Move& move) {
-    // TODO: This is a simplified version - full implementation would handle
-    // all special moves like castling, en passant, promotion
+bool Board::is_move_valid(const Move& move) const {
+    // Basic move validation
+    if (!move.is_valid()) {
+        return false;
+    }
+    
+    // Check if piece exists on source square
+    char piece_on_source = get_piece(move.from_rank, move.from_file);
+    if (piece_on_source == '.' || piece_on_source != move.piece) {
+        return false;
+    }
+    
+    // Check if it's the correct player's turn
+    Color piece_color = char_to_color(move.piece);
+    if (piece_color != active_color) {
+        return false;
+    }
+    
+    // Check for friendly fire (capturing own pieces)
+    if (!move.is_en_passant) {
+        char target_piece = get_piece(move.to_rank, move.to_file);
+        if (target_piece != '.' && char_to_color(target_piece) == piece_color) {
+            return false; // Cannot capture own pieces
+        }
+    }
+    
+    // For en passant, check if it's valid
+    if (move.is_en_passant) {
+        if (en_passant_file == -1 || move.to_file != en_passant_file) {
+            return false;
+        }
+        PieceType piece_type = char_to_piece_type(move.piece);
+        if (piece_type != PAWN) {
+            return false;
+        }
+    }
+    
+    // For castling, perform basic validation
+    if (move.is_castling) {
+        PieceType piece_type = char_to_piece_type(move.piece);
+        if (piece_type != KING) {
+            return false;
+        }
+        // Additional castling validation would go here
+    }
+    
+    return true;
+}
+
+bool Board::is_move_legal(const Move& move) {
+    MoveGenerator generator;
+    std::vector<Move> legal_moves = generator.generate_legal_moves(*this);
+    return std::any_of(legal_moves.begin(), legal_moves.end(), [&](const Move& m) {
+        return m == move;
+    });
+}
+
+BitboardMoveUndoData Board::make_move(const Move& move) {
+    if (!is_move_legal(move)) {
+        return {}; // Invalid move, return empty undo data
+    }
+
+    BitboardMoveUndoData undo_data;
+    undo_data.move = move;
+    undo_data.captured_piece = move.captured_piece;
+    undo_data.castling_rights = castling_rights;
+    undo_data.en_passant_file = en_passant_file;
+    undo_data.halfmove_clock = halfmove_clock;
+
+    apply_move(move);
+
+    return undo_data;
+}
+
+BitboardMoveUndoData Board::apply_move(const Move& move) {
+    // Store undo data
+    BitboardMoveUndoData undo_data;
+    undo_data.move = move;
+    undo_data.captured_piece = move.captured_piece;
+    undo_data.castling_rights = castling_rights;
+    undo_data.en_passant_file = en_passant_file;
+    undo_data.halfmove_clock = halfmove_clock;
     
     int from_square = BitboardUtils::square_index(move.from_rank, move.from_file);
     int to_square = BitboardUtils::square_index(move.to_rank, move.to_file);
@@ -210,12 +291,25 @@ bool Board::make_move(const Move& move) {
     // Find the piece being moved
     PieceType moving_piece_type = char_to_piece_type(move.piece);
     Color moving_color = char_to_color(move.piece);
+    Color opponent_color = (moving_color == WHITE) ? BLACK : WHITE;
+    
+    // Handle captures (store captured piece if not already set)
+    if (undo_data.captured_piece == '.' && !move.is_en_passant) {
+        undo_data.captured_piece = get_piece(move.to_rank, move.to_file);
+    }
     
     // Remove piece from source square
     BitboardUtils::clear_bit(piece_bitboards[moving_color][moving_piece_type], from_square);
     
-    // Clear destination square (capture)
-    clear_square(to_square);
+    // Handle en passant capture
+    if (move.is_en_passant) {
+        int captured_pawn_rank = (moving_color == WHITE) ? move.to_rank - 1 : move.to_rank + 1;
+        int captured_pawn_square = BitboardUtils::square_index(captured_pawn_rank, move.to_file);
+        BitboardUtils::clear_bit(piece_bitboards[opponent_color][PAWN], captured_pawn_square);
+    } else {
+        // Clear destination square for normal captures
+        clear_square(to_square);
+    }
     
     // Place piece on destination square
     if (move.promotion_piece != '.') {
@@ -249,23 +343,36 @@ bool Board::make_move(const Move& move) {
         BitboardUtils::set_bit(piece_bitboards[moving_color][ROOK], rook_to_square);
     }
     
-    // Handle en passant
-    if (move.is_en_passant) {
-        int captured_pawn_rank = (moving_color == WHITE) ? move.to_rank - 1 : move.to_rank + 1;
-        int captured_pawn_square = BitboardUtils::square_index(captured_pawn_rank, move.to_file);
-        Color opponent_color = (moving_color == WHITE) ? BLACK : WHITE;
-        BitboardUtils::clear_bit(piece_bitboards[opponent_color][PAWN], captured_pawn_square);
-    }
-    
-    // Update game state
-    active_color = (active_color == WHITE) ? BLACK : WHITE;
-    
-    // Update castling rights (simplified)
+    // Update castling rights
+    // King moves remove all castling rights for that color
     if (moving_piece_type == KING) {
         if (moving_color == WHITE) {
             castling_rights &= ~0x03; // Clear white castling rights
         } else {
             castling_rights &= ~0x0C; // Clear black castling rights
+        }
+    }
+    // Rook moves remove castling rights for that side
+    else if (moving_piece_type == ROOK) {
+        if (moving_color == WHITE) {
+            if (move.from_file == 0) castling_rights &= ~0x02; // White queenside
+            if (move.from_file == 7) castling_rights &= ~0x01; // White kingside
+        } else {
+            if (move.from_file == 0) castling_rights &= ~0x08; // Black queenside
+            if (move.from_file == 7) castling_rights &= ~0x04; // Black kingside
+        }
+    }
+    // Captures of rooks remove castling rights
+    if (undo_data.captured_piece != '.') {
+        PieceType captured_type = char_to_piece_type(undo_data.captured_piece);
+        if (captured_type == ROOK) {
+            if (move.to_rank == 0) { // Black back rank
+                if (move.to_file == 0) castling_rights &= ~0x08; // Black queenside
+                if (move.to_file == 7) castling_rights &= ~0x04; // Black kingside
+            } else if (move.to_rank == 7) { // White back rank
+                if (move.to_file == 0) castling_rights &= ~0x02; // White queenside
+                if (move.to_file == 7) castling_rights &= ~0x01; // White kingside
+            }
         }
     }
     
@@ -276,19 +383,101 @@ bool Board::make_move(const Move& move) {
         en_passant_file = -1;
     }
     
+    // Update halfmove clock
+    if (moving_piece_type == PAWN || undo_data.captured_piece != '.') {
+        halfmove_clock = 0; // Reset on pawn move or capture
+    } else {
+        halfmove_clock++;
+    }
+    
+    // Update fullmove number
+    if (active_color == BLACK) {
+        fullmove_number++;
+    }
+    
+    // Switch active color
+    active_color = opponent_color;
+    
     update_combined_bitboards();
-    return true;
+    return undo_data;
 }
 
-void Board::undo_move(const Move& move, const BitboardMoveUndoData& undo_data) {
+void Board::undo_move(const BitboardMoveUndoData& undo_data) {
+    const Move& move = undo_data.move;
+    
     // Restore game state
     castling_rights = undo_data.castling_rights;
     en_passant_file = undo_data.en_passant_file;
     halfmove_clock = undo_data.halfmove_clock;
+    
+    // Switch back active color
     active_color = (active_color == WHITE) ? BLACK : WHITE;
     
-    // Reverse the move (simplified implementation)
-    // TODO: Full implementation would handle all special cases
+    // Update fullmove number
+    if (active_color == BLACK) {
+        fullmove_number--;
+    }
+    
+    int from_square = BitboardUtils::square_index(move.from_rank, move.from_file);
+    int to_square = BitboardUtils::square_index(move.to_rank, move.to_file);
+    
+    PieceType moving_piece_type = char_to_piece_type(move.piece);
+    Color moving_color = char_to_color(move.piece);
+    Color opponent_color = (moving_color == WHITE) ? BLACK : WHITE;
+    
+    // Handle castling undo
+    if (move.is_castling) {
+        int rook_from_file, rook_to_file;
+        if (move.to_file == 6) { // Kingside
+            rook_from_file = 7;
+            rook_to_file = 5;
+        } else { // Queenside
+            rook_from_file = 0;
+            rook_to_file = 3;
+        }
+        
+        int rook_from_square = BitboardUtils::square_index(move.from_rank, rook_from_file);
+        int rook_to_square = BitboardUtils::square_index(move.from_rank, rook_to_file);
+        
+        // Move rook back
+        BitboardUtils::clear_bit(piece_bitboards[moving_color][ROOK], rook_to_square);
+        BitboardUtils::set_bit(piece_bitboards[moving_color][ROOK], rook_from_square);
+    }
+    
+    // Remove piece from destination square
+    if (move.promotion_piece != '.') {
+        // Undo promotion
+        PieceType promotion_type = char_to_piece_type(move.promotion_piece);
+        BitboardUtils::clear_bit(piece_bitboards[moving_color][promotion_type], to_square);
+    } else {
+        BitboardUtils::clear_bit(piece_bitboards[moving_color][moving_piece_type], to_square);
+    }
+    
+    // Place piece back on source square
+    BitboardUtils::set_bit(piece_bitboards[moving_color][moving_piece_type], from_square);
+    
+    // Update king position if king moved
+    if (moving_piece_type == KING) {
+        king_positions[moving_color] = from_square;
+    }
+    
+    // Restore captured piece
+    if (move.is_en_passant) {
+        // Restore en passant captured pawn
+        int captured_pawn_rank = (moving_color == WHITE) ? move.to_rank - 1 : move.to_rank + 1;
+        int captured_pawn_square = BitboardUtils::square_index(captured_pawn_rank, move.to_file);
+        BitboardUtils::set_bit(piece_bitboards[opponent_color][PAWN], captured_pawn_square);
+    } else if (undo_data.captured_piece != '.') {
+        // Restore normally captured piece
+        PieceType captured_type = char_to_piece_type(undo_data.captured_piece);
+        Color captured_color = char_to_color(undo_data.captured_piece);
+        BitboardUtils::set_bit(piece_bitboards[captured_color][captured_type], to_square);
+        
+        // Update king position if captured piece was a king (shouldn't happen in normal play)
+        if (captured_type == KING) {
+            king_positions[captured_color] = to_square;
+        }
+    }
     
     update_combined_bitboards();
 }

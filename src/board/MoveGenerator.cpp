@@ -1,5 +1,6 @@
 #include "MoveGenerator.h"
 #include <algorithm>
+#include <iostream>
 
 MoveGenerator::MoveGenerator() : nodes_searched(0), moves_generated(0) {
     // Initialize bitboard utilities if not already done
@@ -264,6 +265,7 @@ void MoveGenerator::generate_castling_moves(const Board& board, std::vector<Move
         castle_move.is_castling = true;
         castle_move.promotion_piece = '.';
         castle_move.is_en_passant = false;
+        castle_move.captured_piece = '.';  // Castling doesn't capture
         moves.push_back(castle_move);
     }
 
@@ -278,6 +280,7 @@ void MoveGenerator::generate_castling_moves(const Board& board, std::vector<Move
         castle_move.is_castling = true;
         castle_move.promotion_piece = '.';
         castle_move.is_en_passant = false;
+        castle_move.captured_piece = '.';  // Castling doesn't capture
         moves.push_back(castle_move);
     }
 }
@@ -305,6 +308,9 @@ void MoveGenerator::generate_en_passant_moves(const Board& board, std::vector<Mo
             en_passant_move.is_en_passant = true;
             en_passant_move.is_castling = false;
             en_passant_move.promotion_piece = '.';
+            // Set captured piece for en passant (opponent's pawn)
+            Board::Color opponent = (color == Board::WHITE) ? Board::BLACK : Board::WHITE;
+            en_passant_move.captured_piece = piece_type_to_char(Board::PAWN, opponent);
             moves.push_back(en_passant_move);
         }
     }
@@ -321,6 +327,9 @@ void MoveGenerator::generate_en_passant_moves(const Board& board, std::vector<Mo
             en_passant_move.is_en_passant = true;
             en_passant_move.is_castling = false;
             en_passant_move.promotion_piece = '.';
+            // Set captured piece for en passant (opponent's pawn)
+            Board::Color opponent = (color == Board::WHITE) ? Board::BLACK : Board::WHITE;
+            en_passant_move.captured_piece = piece_type_to_char(Board::PAWN, opponent);
             moves.push_back(en_passant_move);
         }
     }
@@ -331,22 +340,16 @@ bool MoveGenerator::is_in_check(const Board& board, Board::Color color) {
 }
 
 bool MoveGenerator::is_legal_move(Board& board, const Move& move) {
-    // Make a copy of the board state
-    BitboardMoveUndoData undo_data;
-    undo_data.castling_rights = board.get_castling_rights();
-    undo_data.en_passant_file = board.get_en_passant_file();
-    undo_data.halfmove_clock = board.get_halfmove_clock();
-
     Board::Color moving_color = board.get_active_color();
 
     // Make the move
-    board.make_move(move);
+    BitboardMoveUndoData undo_data = board.apply_move(move);
 
     // Check if the king is in check after the move
     bool is_legal = !is_in_check(board, moving_color);
 
     // Undo the move
-    board.undo_move(move, undo_data);
+    board.undo_move(undo_data);
 
     return is_legal;
 }
@@ -439,6 +442,10 @@ void MoveGenerator::add_moves_from_bitboard(Bitboard from_square, Bitboard to_sq
         move.is_castling = false;
         move.is_en_passant = false;
         move.promotion_piece = '.';
+        
+        // Set captured piece if there's a piece on the destination square
+        char piece_at_destination = board.get_piece(to_rank, to_file);
+        move.captured_piece = (piece_at_destination != '.') ? piece_at_destination : '.';
 
         moves.push_back(move);
     }
@@ -466,6 +473,13 @@ void MoveGenerator::add_pawn_moves(int from_square, Bitboard to_squares, Board::
             move.is_castling = false;
             move.is_en_passant = false;
             move.promotion_piece = '.';
+            
+            // Set captured piece for captures
+            if (is_capture) {
+                move.captured_piece = board.get_piece(to_rank, to_file);
+            } else {
+                move.captured_piece = '.';
+            }
 
             moves.push_back(move);
         }
@@ -491,6 +505,13 @@ void MoveGenerator::add_promotion_moves(int from_square, int to_square, Board::C
         move.promotion_piece = (color == Board::WHITE) ? std::toupper(promo_piece) : promo_piece;
         move.is_castling = false;
         move.is_en_passant = false;
+        
+        // Set captured piece for promotion captures
+        if (is_capture) {
+            move.captured_piece = board.get_piece(to_rank, to_file);
+        } else {
+            move.captured_piece = '.';
+        }
 
         moves.push_back(move);
     }

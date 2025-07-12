@@ -32,29 +32,34 @@ add_library(bitboard
     src/board/Move.h
 )
 
-# Create test executable
-add_executable(yokichess_test
-    src/main/test.cpp
-)
-
 # Create bitboard test executable
 add_executable(test_bitboards
-    src/board/test_bitboards.cpp
+    src/main/test_bitboards.cpp
 )
 
-# Link engine library to test executable
-target_link_libraries(yokichess_test engine)
+# Create attack test executable
+add_executable(attack_test
+    src/main/attack_test.cpp
+)
+
+# Create move/undo test executable
+add_executable(test_move_undo
+    src/main/test_move_undo.cpp
+)
+
+# Create piece movement test executable
+add_executable(test_piece_movement
+    src/main/test_piece_movement.cpp
+)
 
 # Link bitboard library to bitboard test executable
 target_link_libraries(test_bitboards bitboard)
 
-# Set output directory for executable
-set_target_properties(yokichess_test PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
-)
+# Link bitboard library to attack test executable
+target_link_libraries(attack_test bitboard)
 
-# Optional: Add compiler flags for debugging
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    target_compile_options(engine PRIVATE -g -O0)
-    target_compile_options(yokichess_test PRIVATE -g -O0)
-endif()
+# Link bitboard library to move/undo test executable
+target_link_libraries(test_move_undo bitboard)
+
+# Link bitboard library to piece movement test executable
+target_link_libraries(test_piece_movement bitboard)

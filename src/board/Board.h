@@ -92,8 +92,11 @@ public:
     [[nodiscard]] int get_king_position(Color color) const { return king_positions[color]; }
     
     // Move operations
-    bool make_move(const Move& move);
-    void undo_move(const Move& move, const BitboardMoveUndoData& undo_data);
+    [[nodiscard]] bool is_move_valid(const Move& move) const;
+    bool is_move_legal(const Move& move);
+    BitboardMoveUndoData make_move(const Move& move);
+    BitboardMoveUndoData apply_move(const Move& move);
+    void undo_move(const BitboardMoveUndoData& undo_data);
     
     // Attack and check detection
     [[nodiscard]] bool is_square_attacked(int square, Color attacking_color) const;
