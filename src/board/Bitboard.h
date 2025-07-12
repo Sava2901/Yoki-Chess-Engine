@@ -4,8 +4,27 @@
 #include <cstdint>
 #include <array>
 #include <string>
+#include <immintrin.h>  // For BMI2 and POPCNT intrinsics
+// TODO: Check the functions for each technology
 
 using Bitboard = uint64_t;
+
+// Faster bitboard operations using compiler intrinsics
+#ifdef __BMI2__
+    #define pop_lsb(bb) _blsr_u64(bb)
+#endif
+
+#ifdef __POPCNT__
+    #define count_bits(bb) _mm_popcnt_u64(bb)
+#else
+    #define count_bits(bb) __builtin_popcountll(bb)
+#endif
+
+#ifdef __BMI__
+    #define get_lsb(bb) _tzcnt_u64(bb)
+#else
+    #define get_lsb(bb) __builtin_ctzll(bb)
+#endif
 
 // Bitboard constants
 constexpr Bitboard EMPTY_BOARD = 0ULL;
@@ -67,12 +86,12 @@ public:
     
     // Population count (number of set bits)
     static int popcount(Bitboard bb) {
-        return __builtin_popcountll(bb);
+        return count_bits(bb);
     }
     
     // Find first set bit (least significant bit)
     static int lsb(Bitboard bb) {
-        return __builtin_ctzll(bb);
+        return get_lsb(bb);
     }
     
     // Find most significant bit
@@ -82,9 +101,15 @@ public:
     
     // Remove least significant bit
     static Bitboard pop_lsb(Bitboard& bb) {
+#ifdef __BMI2__
+        int square = get_lsb(bb);
+        bb = _blsr_u64(bb);
+        return square;
+#else
         int square = lsb(bb);
         bb &= bb - 1;
         return square;
+#endif
     }
     
     // Convert square coordinates to square index
@@ -106,6 +131,12 @@ public:
     static Bitboard bishop_attacks(int square, Bitboard occupancy);
     static Bitboard queen_attacks(int square, Bitboard occupancy);
     
+    // PEXT bitboard attacks (BMI2 optimized)
+    #ifdef __BMI2__
+    static Bitboard rook_attacks_pext(int square, Bitboard occupancy);
+    static Bitboard bishop_attacks_pext(int square, Bitboard occupancy);
+    #endif
+    
     // Non-sliding piece attacks
     static Bitboard knight_attacks(int square);
     static Bitboard king_attacks(int square);
@@ -114,7 +145,17 @@ public:
     // Utility functions
     static std::string bitboard_to_string(Bitboard bb);
     static void print_bitboard(Bitboard bb);
-    static int get_lsb_index(Bitboard bb) { return __builtin_ctzll(bb); }
+    static int get_lsb_index(Bitboard bb) { return get_lsb(bb); }
+    
+    // Public accessors for magic bitboard data
+    static Bitboard get_rook_magic(int square) { return rook_magics[square]; }
+    static Bitboard get_bishop_magic(int square) { return bishop_magics[square]; }
+    static int get_rook_shift(int square) { return rook_shifts[square]; }
+    static int get_bishop_shift(int square) { return bishop_shifts[square]; }
+    static Bitboard* get_rook_attacks_table(int square) { return rook_attacks_table[square]; }
+    static Bitboard* get_bishop_attacks_table(int square) { return bishop_attacks_table[square]; }
+    static Bitboard get_rook_mask(int square) { return rook_mask(square); }
+    static Bitboard get_bishop_mask(int square) { return bishop_mask(square); }
     
 private:
     // Magic bitboard tables

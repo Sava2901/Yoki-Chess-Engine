@@ -2,6 +2,12 @@
 #include <iostream>
 #include <iomanip>
 #include <random>
+#ifdef __BMI2__
+#include <immintrin.h>
+#define USE_PEXT 1
+#else
+#define USE_PEXT 0
+#endif
 
 // Static member initialization
 std::array<Bitboard, 64> BitboardUtils::rook_magics;
@@ -344,16 +350,41 @@ Bitboard BitboardUtils::generate_bishop_attacks_slow(int square, Bitboard occupa
 }
 
 Bitboard BitboardUtils::rook_attacks(int square, Bitboard occupancy) {
+#ifdef __BMI2__
+    if (USE_PEXT) {
+        return rook_attacks_pext(square, occupancy);
+    }
+#endif
     occupancy &= rook_mask(square);
     int magic_index = (occupancy * rook_magics[square]) >> rook_shifts[square];
     return rook_attacks_table[square][magic_index];
 }
 
 Bitboard BitboardUtils::bishop_attacks(int square, Bitboard occupancy) {
+#ifdef __BMI2__
+    if (USE_PEXT) {
+        return bishop_attacks_pext(square, occupancy);
+    }
+#endif
     occupancy &= bishop_mask(square);
     int magic_index = (occupancy * bishop_magics[square]) >> bishop_shifts[square];
     return bishop_attacks_table[square][magic_index];
 }
+
+#ifdef __BMI2__
+// PEXT bitboard implementations for BMI2 processors
+Bitboard BitboardUtils::rook_attacks_pext(int square, Bitboard occupancy) {
+    Bitboard mask = rook_mask(square);
+    occupancy = _pext_u64(occupancy, mask);
+    return rook_attacks_table[square][occupancy];
+}
+
+Bitboard BitboardUtils::bishop_attacks_pext(int square, Bitboard occupancy) {
+    Bitboard mask = bishop_mask(square);
+    occupancy = _pext_u64(occupancy, mask);
+    return bishop_attacks_table[square][occupancy];
+}
+#endif
 
 Bitboard BitboardUtils::queen_attacks(int square, Bitboard occupancy) {
     return rook_attacks(square, occupancy) | bishop_attacks(square, occupancy);

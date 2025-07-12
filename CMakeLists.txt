@@ -5,6 +5,13 @@ project(YokiChessEngine)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+## For better cpu's: uncomment
+## Set compiler flags for optimization and BMI2 support
+#if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+#    set(CMAKE_CXX_FLAGS_RELEASE "-O3 -march=native -mbmi2 -DNDEBUG")
+#    set(CMAKE_CXX_FLAGS_DEBUG "-O0 -g -march=native -mbmi2")
+#endif()
+
 # Add include directories
 include_directories(src)
 
@@ -52,6 +59,11 @@ add_executable(test_piece_movement
     src/main/test_piece_movement.cpp
 )
 
+# Create optimizations test executable
+add_executable(test_optimizations
+        src/main/test_optimizations.cpp
+)
+
 # Link bitboard library to bitboard test executable
 target_link_libraries(test_bitboards bitboard)
 
@@ -63,3 +75,6 @@ target_link_libraries(test_move_undo bitboard)
 
 # Link bitboard library to piece movement test executable
 target_link_libraries(test_piece_movement bitboard)
+
+# Link bitboard library to optimizations test executable
+target_link_libraries(test_optimizations bitboard)
