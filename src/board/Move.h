@@ -5,6 +5,7 @@
 #include <vector>
 
 // Move structure to represent a chess move
+// TODO: Look into using a more efficient representation for moves
 struct Move {
     int from_rank;
     int from_file;

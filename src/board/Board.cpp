@@ -220,7 +220,7 @@ std::string Board::to_fen() const {
 void Board::set_piece(int rank, int file, char piece) {
     int square = BitboardUtils::square_index(rank, file);
     
-    // Only clear if square is not already empty
+    // Only clear if square is not already empty (branchless check)
     if (piece_mailbox[square] != '.') {
         clear_square(square);
     }
@@ -253,9 +253,8 @@ void Board::place_piece(int square, PieceType piece_type, Color color) {
     BitboardUtils::set_bit(piece_bitboards[color][piece_type], square);
     piece_mailbox[square] = piece_to_char(piece_type, color);
     
-    if (piece_type == KING) {
-        king_positions[color] = square;
-    }
+    // Update king position (branchless)
+    king_positions[color] = (piece_type == KING) ? square : king_positions[color];
     
     update_combined_bitboards();
 }
@@ -387,10 +386,8 @@ BitboardMoveUndoData Board::apply_move(const Move& move) {
         piece_mailbox[to_square] = move.piece;
     }
     
-    // Update king position if king moved
-    if (moving_piece_type == KING) {
-        king_positions[moving_color] = to_square;
-    }
+    // Update king position if king moved (branchless)
+    king_positions[moving_color] = (moving_piece_type == KING) ? to_square : king_positions[moving_color];
     
     // Handle castling
     if (move.is_castling) {
@@ -409,17 +406,17 @@ BitboardMoveUndoData Board::apply_move(const Move& move) {
     castling_rights &= CASTLING_RIGHTS_MASK[to_square];
     
     // Update en passant file (branchless)
-    bool is_double_pawn_move = (moving_piece_type == PAWN) && (abs(move.to_rank - move.from_rank) == 2);
+    bool is_double_pawn_move = (moving_piece_type == PAWN) && 
+        ((moving_color == WHITE && move.to_rank - move.from_rank == 2) ||
+         (moving_color == BLACK && move.from_rank - move.to_rank == 2));
     en_passant_file = is_double_pawn_move ? move.from_file : -1;
     
     // Update halfmove clock (branchless)
     bool reset_halfmove = (moving_piece_type == PAWN) || (undo_data.captured_piece != '.');
     halfmove_clock = reset_halfmove ? 0 : halfmove_clock + 1;
     
-    // Update fullmove number
-    if (active_color == BLACK) {
-        fullmove_number++;
-    }
+    // Update fullmove number (branchless)
+    fullmove_number += (active_color == BLACK);
     
     // Switch active color
     active_color = opponent_color;
@@ -439,10 +436,8 @@ void Board::undo_move(const BitboardMoveUndoData& undo_data) {
     // Switch back active color
     active_color = (active_color == WHITE) ? BLACK : WHITE;
     
-    // Update fullmove number
-    if (active_color == BLACK) {
-        fullmove_number--;
-    }
+    // Update fullmove number (branchless)
+    fullmove_number -= (active_color == BLACK);
     
     int from_square = BitboardUtils::square_index(move.from_rank, move.from_file);
     int to_square = BitboardUtils::square_index(move.to_rank, move.to_file);
@@ -479,10 +474,8 @@ void Board::undo_move(const BitboardMoveUndoData& undo_data) {
     piece_mailbox[from_square] = move.piece;
     piece_mailbox[to_square] = '.';
     
-    // Update king position if king moved
-    if (moving_piece_type == KING) {
-        king_positions[moving_color] = from_square;
-    }
+    // Update king position if king moved (branchless)
+    king_positions[moving_color] = (moving_piece_type == KING) ? from_square : king_positions[moving_color];
     
     // Restore captured piece
     if (move.is_en_passant) {
@@ -498,10 +491,8 @@ void Board::undo_move(const BitboardMoveUndoData& undo_data) {
         BitboardUtils::set_bit(piece_bitboards[captured_color][captured_type], to_square);
         piece_mailbox[to_square] = undo_data.captured_piece;
         
-        // Update king position if captured piece was a king (shouldn't happen in normal play)
-        if (captured_type == KING) {
-            king_positions[captured_color] = to_square;
-        }
+        // Update king position if captured piece was a king (branchless)
+        king_positions[captured_color] = (captured_type == KING) ? to_square : king_positions[captured_color];
     }
     
     update_combined_bitboards();
