@@ -130,8 +130,8 @@ public:
     
     // Incremental evaluation management
     void initialize_incremental_eval(const Board& board);
-    void update_incremental_eval(const Move& move, const BitboardMoveUndoData& undo_data);
-    void undo_incremental_eval(const Move& move, const BitboardMoveUndoData& undo_data);
+    void update_incremental_eval(const Board& board, const Move& move, const BitboardMoveUndoData& undo_data);
+    void undo_incremental_eval(const Board& board, const Move& move, const BitboardMoveUndoData& undo_data);
     
     // Zobrist hashing
     uint64_t compute_zobrist_hash(const Board& board) const;

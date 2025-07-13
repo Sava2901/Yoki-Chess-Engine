@@ -118,7 +118,20 @@ int Evaluation::evaluate(const Board& board) {
 // Incremental evaluation
 int Evaluation::evaluate_incremental(const Board& board, const Move& move, const BitboardMoveUndoData& undo_data) {
     // Update incremental data based on the move
-    update_incremental_eval(move, undo_data);
+    update_incremental_eval(board, move, undo_data);
+    
+    // Recalculate components that were marked for recalculation (set to 0)
+    if (incremental_data.pawn_structure_score == 0) {
+        incremental_data.pawn_structure_score = evaluate_pawn_structure(board);
+    }
+    
+    if (incremental_data.king_safety_score == 0) {
+        incremental_data.king_safety_score = evaluate_king_safety(board);
+    }
+    
+    if (incremental_data.mobility_score == 0) {
+        incremental_data.mobility_score = evaluate_mobility(board);
+    }
     
     // Return the updated evaluation
     int total_score = incremental_data.material_balance + 
@@ -142,7 +155,7 @@ void Evaluation::initialize_incremental_eval(const Board& board) {
 }
 
 // Update incremental evaluation
-void Evaluation::update_incremental_eval(const Move& move, const BitboardMoveUndoData& undo_data) {
+void Evaluation::update_incremental_eval(const Board& board, const Move& move, const BitboardMoveUndoData& undo_data) {
     Board::PieceType piece_type = Board::char_to_piece_type(move.piece);
     Board::Color piece_color = Board::char_to_color(move.piece);
     int side_multiplier = side_sign(piece_color);
@@ -179,14 +192,112 @@ void Evaluation::update_incremental_eval(const Move& move, const BitboardMoveUnd
     incremental_data.game_phase = (incremental_data.phase_value > EvalConstants::TOTAL_PHASE * 2 / 3) ? OPENING :
                                  (incremental_data.phase_value > EvalConstants::TOTAL_PHASE / 3) ? MIDDLEGAME : ENDGAME;
 
-
-    // TODO: Pawn structure, king safety, and mobility are more complex to update incrementally
-    // For now, we'll mark them as needing recalculation
-    // In a full implementation, you'd want to update these incrementally as well
+    // Update pawn structure score incrementally
+    // For pawn moves, captures involving pawns, or promotions, we need to recalculate affected areas
+    if (piece_type == Board::PAWN || move.captured_piece == 'P' || move.captured_piece == 'p' || move.promotion_piece != '.') {
+        // Calculate old pawn structure scores
+        int old_white_pawn_score = 0;
+        int old_black_pawn_score = 0;
+        
+        // Store current scores before move effects
+        Board temp_board;
+        // We need to reconstruct the board state before the move to get accurate deltas
+        // For now, recalculate the affected color's pawn structure
+        
+        // Recalculate pawn structure for both colors when pawns are involved
+        // This is more accurate than trying to track all pawn interactions
+        incremental_data.pawn_structure_score = 0; // Will be recalculated in next evaluation
+    }
+    
+    // Update king safety score incrementally
+    // King safety changes when:
+    // 1. King moves
+    // 2. Pieces move near the king
+    // 3. Castling occurs
+    // 4. Pieces that can attack the king area are moved/captured
+    int white_king_pos = board.get_king_position(Board::WHITE);
+    int black_king_pos = board.get_king_position(Board::BLACK);
+    if (piece_type == Board::KING || 
+        move.captured_piece != '.' ||
+        (piece_type == Board::ROOK && (from_square == 0 || from_square == 7 || from_square == 56 || from_square == 63)) ||
+        abs_int(to_square - white_king_pos) <= 16 || abs_int(to_square - black_king_pos) <= 16 ||
+        abs_int(from_square - white_king_pos) <= 16 || abs_int(from_square - black_king_pos) <= 16) {
+        // Recalculate king safety when kings move or pieces move near kings
+        incremental_data.king_safety_score = 0; // Will be recalculated in next evaluation
+    }
+    
+    // Update mobility score incrementally
+    // Mobility changes when:
+    // 1. Any piece moves (changes its own mobility)
+    // 2. Pieces are captured (affects mobility of other pieces)
+    // 3. Pieces block/unblock other pieces' mobility
+    if (move.captured_piece != '.' || 
+        piece_type == Board::KNIGHT || piece_type == Board::BISHOP || 
+        piece_type == Board::ROOK || piece_type == Board::QUEEN) {
+        // For pieces that significantly affect mobility, recalculate
+        // This is more efficient than trying to track all mobility interactions
+        incremental_data.mobility_score = 0; // Will be recalculated in next evaluation
+    }
+    
+    // Handle special moves that affect multiple evaluation components
+    // Castling
+    if (piece_type == Board::KING && abs_int(to_square - from_square) == 2) {
+        // Castling affects king safety and potentially mobility
+        incremental_data.king_safety_score = 0;
+        incremental_data.mobility_score = 0;
+    }
+    
+    // En passant capture
+    if (piece_type == Board::PAWN && move.captured_piece == '.' && 
+        abs_int(to_square - from_square) != 8 && abs_int(to_square - from_square) != 16) {
+        // En passant affects pawn structure
+        incremental_data.pawn_structure_score = 0;
+    }
 }
 
+/* 
+Material update:
+On captures and promotions, update material balance and phase values by adding/subtracting only the changed pieces.
+This is already done well in your code.
+
+Piece-Square Table (PST) update:
+Add the new PST value of the piece on its destination square.
+Subtract the old PST value of the piece on its source square.
+Also adjust for promotion PST changes.
+This part looks good.
+
+Pawn structure update:
+Pawn structure is tricky because pawn moves and captures can affect many interrelated pawns.
+Instead of resetting to 0 unconditionally, you want to:
+Remove the contribution of the pawn on the old square (if a pawn moved or was captured).
+Add the contribution of the pawn on the new square.
+Update connected passed pawns, isolated pawns, doubled pawns, etc., incrementally.
+To do this well, you typically keep bitboards or counters tracking pawn structure features.
+If you cannot track incremental updates precisely, then a full recalculation might be required when pawn structure changes.
+
+King safety update:
+Only recalculate king safety if the move affects king position or nearby squares, or captures/moves pieces that influence king safety.
+Ideally, update king safety incrementally:
+Remove old attackers/defenders.
+Add new attackers/defenders.
+Resetting to zero and recalculating fully is correct but less efficient.
+
+Mobility update:
+Mobility depends on pieces' possible moves.
+When a piece moves or is captured, the mobility of nearby pieces changes.
+Ideally, update mobility incrementally:
+Remove old mobility contributions for moved/captured pieces.
+Add mobility contributions for moved pieces on their new squares.
+Resetting and recalculating mobility is simpler but slower.
+
+Special moves:
+Castling affects king safety and rook mobility.
+En passant affects pawn structure.
+These should trigger updates to those evaluation components, as your code shows.
+*/
+
 // Undo incremental evaluation
-void Evaluation::undo_incremental_eval(const Move& move, const BitboardMoveUndoData& undo_data) {
+void Evaluation::undo_incremental_eval(const Board& board, const Move& move, const BitboardMoveUndoData& undo_data) {
     Board::PieceType piece_type = Board::char_to_piece_type(move.piece);
     Board::Color piece_color = Board::char_to_color(move.piece);
     int side_multiplier = side_sign(piece_color);
@@ -220,6 +331,43 @@ void Evaluation::undo_incremental_eval(const Move& move, const BitboardMoveUndoD
     // Update game phase
     incremental_data.game_phase = (incremental_data.phase_value > EvalConstants::TOTAL_PHASE * 2 / 3) ? OPENING :
                                  (incremental_data.phase_value > EvalConstants::TOTAL_PHASE / 3) ? MIDDLEGAME : ENDGAME;
+    
+    // Mark components for recalculation when undoing moves that affect them
+    // Undo pawn structure score incrementally
+    if (piece_type == Board::PAWN || move.captured_piece == 'P' || move.captured_piece == 'p' || move.promotion_piece != '.') {
+        incremental_data.pawn_structure_score = 0; // Will be recalculated in next evaluation
+    }
+    
+    // Undo king safety score incrementally
+    int white_king_pos = board.get_king_position(Board::WHITE);
+    int black_king_pos = board.get_king_position(Board::BLACK);
+    if (piece_type == Board::KING || 
+        move.captured_piece != '.' ||
+        (piece_type == Board::ROOK && (from_square == 0 || from_square == 7 || from_square == 56 || from_square == 63)) ||
+        abs_int(to_square - white_king_pos) <= 16 || abs_int(to_square - black_king_pos) <= 16 ||
+        abs_int(from_square - white_king_pos) <= 16 || abs_int(from_square - black_king_pos) <= 16) {
+        incremental_data.king_safety_score = 0; // Will be recalculated in next evaluation
+    }
+    
+    // Undo mobility score incrementally
+    if (move.captured_piece != '.' || 
+        piece_type == Board::KNIGHT || piece_type == Board::BISHOP || 
+        piece_type == Board::ROOK || piece_type == Board::QUEEN) {
+        incremental_data.mobility_score = 0; // Will be recalculated in next evaluation
+    }
+    
+    // Handle special moves that affect multiple evaluation components
+    // Castling
+    if (piece_type == Board::KING && abs_int(to_square - from_square) == 2) {
+        incremental_data.king_safety_score = 0;
+        incremental_data.mobility_score = 0;
+    }
+    
+    // En passant capture
+    if (piece_type == Board::PAWN && move.captured_piece == '.' && 
+        abs_int(to_square - from_square) != 8 && abs_int(to_square - from_square) != 16) {
+        incremental_data.pawn_structure_score = 0;
+    }
 }
 
 // Zobrist hashing
