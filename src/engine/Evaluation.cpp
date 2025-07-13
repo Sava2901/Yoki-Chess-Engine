@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <algorithm>
 
+// TODO: Add relative piece values for different positions and future prospects
 // TODO: Check if there is a need for precomputed bitboard masks: Isolated Pawn Detection, Backward Pawns, Outposts,
 // King Shield / Pawn Storm, Rook Open/Semi-Open Files, Pawn Spans and Front Spans, Pawn Spans and Front Spans, Center Control
 
@@ -24,6 +25,13 @@ static int max_int(int a, int b) {
     int diff = a - b; 
     int mask = diff >> 31;      // all 1s if diff < 0, else 0 
     return a - (diff & mask);   // if a < b, subtract diff else subtract 0 
+}
+
+// Branchless min for 32-bit int 
+static int min_int(int a, int b) { 
+    int diff = a - b; 
+    int mask = diff >> 31;      // all 1s if diff < 0, else 0 
+    return b + (diff & mask);   // if a < b, add diff else add 0 
 }
 
 // Helper function to get file mask
@@ -72,13 +80,13 @@ Evaluation::Evaluation() {
     init_pawn_masks(); // Initialize other pawn masks
 }
 
+// TODO: Tune constants and piece-square tables for better representation of piece values and positions
 // Main evaluation function
 int Evaluation::evaluate(const Board& board) {
     int score = 0;
     
     // Get game phase
     GamePhase phase = get_game_phase(board);
-    int phase_value = get_phase_value(board);
     
     // Material evaluation
     int material_score = evaluate_material(board);
@@ -105,14 +113,17 @@ int Evaluation::evaluate(const Board& board) {
     int endgame_score = (phase == ENDGAME) ? evaluate_endgame_factors(board) : 0;
     
     // Combine all scores
-    score = material_score + positional_score + pawn_score + king_safety_score + 
+    score = material_score + positional_score + pawn_score + king_safety_score +
             mobility_score + coordination_score + development_score + endgame_score;
     
-    // Add tempo bonus for side to move
-    score += EvalConstants::TEMPO_BONUS;
-    
-    // Return score from white's perspective
-    return board.get_active_color() == Board::WHITE ? score : -score;
+    // Add tempo bonus for side to move (from white's perspective)
+    if (board.get_active_color() == Board::WHITE) {
+        score += EvalConstants::TEMPO_BONUS;
+    } else {
+        score -= EvalConstants::TEMPO_BONUS;
+    }
+
+    return score;
 }
 
 // Incremental evaluation
@@ -133,14 +144,34 @@ int Evaluation::evaluate_incremental(const Board& board, const Move& move, const
         incremental_data.mobility_score = evaluate_mobility(board);
     }
     
+    // Calculate missing components that aren't tracked incrementally
+    GamePhase phase = incremental_data.game_phase;
+    
+    // Piece coordination evaluation
+    int coordination_score = evaluate_piece_coordination(board);
+    
+    // Development evaluation (mainly for opening)
+    int development_score = (phase == OPENING) ? evaluate_development(board) : 0;
+    
+    // Endgame factors
+    int endgame_score = (phase == ENDGAME) ? evaluate_endgame_factors(board) : 0;
+    
     // Return the updated evaluation
     int total_score = incremental_data.material_balance + 
                      incremental_data.positional_balance + 
                      incremental_data.pawn_structure_score + 
                      incremental_data.king_safety_score + 
-                     incremental_data.mobility_score;
+                     incremental_data.mobility_score +
+                     coordination_score + development_score + endgame_score;
     
-    return board.get_active_color() == Board::WHITE ? total_score : -total_score;
+    // Add tempo bonus for side to move (from white's perspective)
+    if (board.get_active_color() == Board::WHITE) {
+        total_score += EvalConstants::TEMPO_BONUS;
+    } else {
+        total_score -= EvalConstants::TEMPO_BONUS;
+    }
+    
+    return total_score;
 }
 
 // Initialize incremental evaluation
@@ -516,7 +547,7 @@ int Evaluation::evaluate_pawn_structure(const Board& board) {
     int score = 0;
     score += evaluate_pawn_structure_for_color(board, Board::WHITE);
     score -= evaluate_pawn_structure_for_color(board, Board::BLACK);
-    
+
     // Store in pawn hash table
     PawnHashEntry entry;
     entry.key = pawn_hash;
@@ -553,30 +584,19 @@ int Evaluation::evaluate_pawn_structure_for_color(const Board& board, Board::Col
         if (is_backward_pawn(board, square, color)) {
             score += EvalConstants::BACKWARD_PAWN_PENALTY;
         }
-        
+
+        // TODO: (BUGFIX) Returns true in false cases
         // Check for passed pawns
-        if (is_passed_pawn(board, square, color)) {
-            score += EvalConstants::PASSED_PAWN_BONUS;
-            score += get_passed_pawn_rank_bonus(square, color);
-        }
+        // if (is_passed_pawn(board, square, color)) {
+        //     score += EvalConstants::PASSED_PAWN_BONUS;
+        //     score += get_passed_pawn_rank_bonus(square, color);
+        //     // std::cout << "Passed pawn " << score << std::endl;
+        // }
         
         // Check for pawn chains
         if (is_pawn_chain(board, square, color)) {
             score += EvalConstants::PAWN_CHAIN_BONUS;
         }
-        
-        // Check for connected pawns (horizontal support)
-        // int file = square % 8;
-        // for (int check_file = file - 1; check_file <= file + 1; check_file += 2) {
-        //     if (check_file >= 0 && check_file < 8) {
-        //         int rank = square / 8;
-        //         int adjacent_square = rank * 8 + check_file;
-        //         if (pawns & (1ULL << adjacent_square)) {
-        //             score += EvalConstants::CONNECTED_PAWNS_BONUS;
-        //             break;
-        //         }
-        //     }
-        // }
 
         // Connected pawns (left/right on same rank)
         for (int df = -1; df <= 1; df += 2) {
@@ -925,15 +945,49 @@ void Evaluation::clear_pawn_hash_table() {
 }
 
 void Evaluation::print_evaluation_breakdown(const Board& board) {
+    GamePhase phase = get_game_phase(board);
+    int phase_value = get_phase_value(board);
+    
+    // Calculate all evaluation components
+    int material_score = evaluate_material(board);
+    int positional_score = evaluate_piece_square_tables(board);
+    int pawn_score = evaluate_pawn_structure(board);
+    int king_safety_score = evaluate_king_safety(board);
+    int mobility_score = evaluate_mobility(board);
+    int coordination_score = evaluate_piece_coordination(board);
+    int development_score = (phase == OPENING) ? evaluate_development(board) : 0;
+    int endgame_score = (phase == ENDGAME) ? evaluate_endgame_factors(board) : 0;
+    
+    // Calculate tempo bonus
+    int tempo_bonus = 0;
+    if (board.get_active_color() == Board::WHITE) {
+        tempo_bonus = EvalConstants::TEMPO_BONUS;
+    } else {
+        tempo_bonus = -EvalConstants::TEMPO_BONUS;
+    }
+    
     std::cout << "=== Evaluation Breakdown ===" << std::endl;
-    std::cout << "Material: " << std::setw(6) << evaluate_material(board) << std::endl;
-    std::cout << "Position: " << std::setw(6) << evaluate_piece_square_tables(board) << std::endl;
-    std::cout << "Pawns:    " << std::setw(6) << evaluate_pawn_structure(board) << std::endl;
-    std::cout << "King:     " << std::setw(6) << evaluate_king_safety(board) << std::endl;
-    std::cout << "Mobility: " << std::setw(6) << evaluate_mobility(board) << std::endl;
-    std::cout << "Phase:    " << (get_game_phase(board) == OPENING ? "Opening" : 
-                                get_game_phase(board) == MIDDLEGAME ? "Middlegame" : "Endgame") << std::endl;
-    std::cout << "Total:    " << std::setw(6) << evaluate(board) << std::endl;
+    std::cout << "Material:     " << std::setw(6) << material_score << std::endl;
+    std::cout << "Position:     " << std::setw(6) << positional_score << std::endl;
+    std::cout << "Pawns:        " << std::setw(6) << pawn_score << std::endl;
+    std::cout << "King Safety:  " << std::setw(6) << king_safety_score << std::endl;
+    std::cout << "Mobility:     " << std::setw(6) << mobility_score << std::endl;
+    std::cout << "Coordination: " << std::setw(6) << coordination_score << std::endl;
+    
+    if (phase == OPENING) {
+        std::cout << "Development:  " << std::setw(6) << development_score << std::endl;
+    }
+    
+    if (phase == ENDGAME) {
+        std::cout << "Endgame:      " << std::setw(6) << endgame_score << std::endl;
+    }
+    
+    std::cout << "Tempo Bonus:  " << std::setw(6) << tempo_bonus << std::endl;
+    std::cout << "Phase:        " << (phase == OPENING ? "Opening" : 
+                                phase == MIDDLEGAME ? "Middlegame" : "Endgame") << std::endl;
+    std::cout << "Active Color: " << (board.get_active_color() == Board::WHITE ? "White" : "Black") << std::endl;
+    std::cout << "------------------------------" << std::endl;
+    std::cout << "Total:        " << std::setw(6) << evaluate(board) << std::endl;
     std::cout << "============================" << std::endl;
 }
 
@@ -951,7 +1005,7 @@ void Evaluation::init_passed_pawn_masks() {
             int direction = (color == Board::WHITE) ? 8 : -8;
             int limit_rank = (color == Board::WHITE) ? 7 : 0;
 
-            for (int f = max_int(0, file - 1); f <= (file + 1 < 7 ? file + 1 : 7); ++f) {
+            for (int f = max_int(0, file - 1); f <= min_int(7, file + 1); ++f) {
                 for (int r = rank + (color == Board::WHITE ? 1 : -1);
                      (color == Board::WHITE ? r <= limit_rank : r >= limit_rank);
                      r += (color == Board::WHITE ? 1 : -1)) {
@@ -1141,7 +1195,7 @@ bool Evaluation::is_pawn_chain(const Board& board, int square, Board::Color colo
 int Evaluation::get_passed_pawn_rank_bonus(int square, Board::Color color) {
     int rank = square >> 3;
     int relative_rank = (color == Board::WHITE) ? rank : (7 - rank);
-    return EvalConstants::ADVANCED_PASSED_PAWN_BONUS * relative_rank * relative_rank >> 4;
+    return (EvalConstants::ADVANCED_PASSED_PAWN_BONUS * relative_rank * relative_rank) >> 4;
 }
 
 // Helper function to calculate distance between squares

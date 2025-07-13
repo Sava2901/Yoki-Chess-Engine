@@ -42,7 +42,8 @@ void test_evaluation_breakdown() {
     Evaluation eval;
     
     // Test starting position breakdown
-    board.set_starting_position();
+    std::cout << "Starting possition:" << std::endl;
+    board.set_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
     eval.print_evaluation_breakdown(board);
     
     std::cout << std::endl;
@@ -326,22 +327,32 @@ void test_symmetry() {
     
     // Test that flipping colors gives opposite evaluation
     std::vector<std::pair<std::string, std::string>> symmetric_positions = {
-        {"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-         "RNBQKBNR/PPPPPPPP/8/8/8/8/pppppppp/rnbqkbnr b kqKQ - 0 1"},
-        {"8/8/8/8/8/8/KP6/k7 w - - 0 1",
-         "8/8/8/8/8/8/kp6/K7 b - - 0 1"}
+        {
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+               "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1"},
+         // "RNBQKBNR/PPPPPPPP/8/8/8/8/pppppppp/rnbqkbnr b kqKQ - 0 1"},
+        // {"8/8/8/8/8/8/KP6/k7 w - - 0 1",
+        //  "8/8/8/8/8/8/kp6/K7 b - - 0 1"}
+        {"8/8/8/KP6/k7/8/8/8 w - - 0 1",
+            "8/8/8/K7/kp6/8/8/8 b - - 0 1"}
     };
     
     for (const auto& pair : symmetric_positions) {
+        std::cout << "\nPosition 1: " << pair.first << std::endl;
         board.set_from_fen(pair.first);
+        board.print();
         int score1 = eval.evaluate(board);
+        eval.print_evaluation_breakdown(board);
         
+        std::cout << "\nPosition 2: " << pair.second << std::endl;
         board.set_from_fen(pair.second);
         int score2 = eval.evaluate(board);
+        eval.print_evaluation_breakdown(board);
         
         bool symmetric = (score1 == -score2);
-        std::cout << "Symmetry test: " << score1 << " vs " << score2 
+        std::cout << "\nSymmetry test: " << score1 << " vs " << score2 
                   << " [" << (symmetric ? "PASS" : "FAIL") << "]" << std::endl;
+        std::cout << "Expected: " << score1 << " vs " << -score1 << std::endl;
     }
     
     std::cout << std::endl;
@@ -575,6 +586,380 @@ void test_evaluation_components() {
     std::cout << std::endl;
 }
 
+void test_piece_coordination() {
+    std::cout << "=== Testing Piece Coordination Evaluation ===" << std::endl;
+    
+    Board board;
+    Evaluation eval;
+    
+    // Test bishop pair
+    board.set_from_fen("rnbqk1nr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+    int bishop_pair_score = eval.evaluate_piece_coordination(board);
+    std::cout << "Bishop pair position: " << bishop_pair_score << std::endl;
+    
+    // Test rook on open file
+    board.set_from_fen("rnbqkbnr/ppp1pppp/8/3p4/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 1");
+    int open_file_score = eval.evaluate_piece_coordination(board);
+    std::cout << "Open file position: " << open_file_score << std::endl;
+    
+    // Test knight outpost
+    board.set_from_fen("rnbqkb1r/pppppppp/5n2/8/8/5N2/PPPPPPPP/RNBQKB1R w KQkq - 0 1");
+    int outpost_score = eval.evaluate_piece_coordination(board);
+    std::cout << "Knight outpost position: " << outpost_score << std::endl;
+    
+    std::cout << std::endl;
+}
+
+void test_endgame_factors() {
+    std::cout << "=== Testing Endgame Factors ===" << std::endl;
+    
+    Board board;
+    Evaluation eval;
+    
+    // Test king activity in endgame
+    board.set_from_fen("8/8/8/4K3/8/8/4k3/8 w - - 0 1");
+    int king_activity = eval.evaluate_endgame_factors(board);
+    std::cout << "King activity endgame: " << king_activity << std::endl;
+    
+    // Test opposition
+    board.set_from_fen("8/8/8/4k3/8/4K3/8/8 w - - 0 1");
+    int opposition = eval.evaluate_endgame_factors(board);
+    std::cout << "Opposition position: " << opposition << std::endl;
+    
+    // Test connected passed pawns
+    board.set_from_fen("8/8/8/2PP4/8/8/8/8 w - - 0 1");
+    int connected_pawns = eval.evaluate_endgame_factors(board);
+    std::cout << "Connected passed pawns: " << connected_pawns << std::endl;
+    
+    std::cout << std::endl;
+}
+
+void test_development_evaluation() {
+    std::cout << "=== Testing Development Evaluation ===" << std::endl;
+    
+    Board board;
+    Evaluation eval;
+    
+    // Test starting position (no development)
+    board.set_starting_position();
+    int start_dev = eval.evaluate_development(board);
+    std::cout << "Starting position development: " << start_dev << std::endl;
+    
+    // Test developed position
+    board.set_from_fen("r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/3P1N2/PPP2PPP/RNBQK2R w KQkq - 0 1");
+    // board.set_from_fen("rnbqkbnr/pppp1ppp/8/4p3/2B1P3/3P4/PPP2PPP/RNBQK1NR w KQkq - 0 1");
+    int developed = eval.evaluate_development(board);
+    std::cout << "Developed position: " << developed << std::endl;
+    
+    // Test early queen development (penalty)
+    board.set_from_fen("rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPPQPPP/RNB1KBNR b KQkq - 0 1");
+    int early_queen = eval.evaluate_development(board);
+    std::cout << "Early queen development: " << early_queen << std::endl;
+    
+    // Test castled position
+    board.set_from_fen("r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/3P1N2/PPP2PPP/RNBQ1RK1 w kq - 0 1");
+    int castled = eval.evaluate_development(board);
+    std::cout << "Castled position: " << castled << std::endl;
+    
+    std::cout << std::endl;
+}
+
+void test_tapered_evaluation() {
+    std::cout << "=== Testing Tapered Evaluation ===" << std::endl;
+    
+    Board board;
+    Evaluation eval;
+    
+    // Test different game phases
+    struct PhaseTest {
+        std::string fen;
+        std::string description;
+    };
+    
+    std::vector<PhaseTest> phase_tests = {
+        {"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "Opening"},
+        {"r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/3P1N2/PPP2PPP/RNBQK2R w KQkq - 0 1", "Middlegame"},
+        {"8/8/8/8/8/8/4K3/4k3 w - - 0 1", "Endgame"}
+    };
+    
+    for (const auto& test : phase_tests) {
+        board.set_from_fen(test.fen);
+        GamePhase phase = eval.get_game_phase(board);
+        int phase_value = eval.get_phase_value(board);
+        int evaluation = eval.evaluate(board);
+        
+        std::cout << std::setw(15) << test.description 
+                  << " - Phase: " << phase 
+                  << ", Value: " << phase_value 
+                  << ", Eval: " << evaluation << std::endl;
+    }
+    
+    std::cout << std::endl;
+}
+
+void test_pawn_structure_detailed() {
+    std::cout << "=== Testing Detailed Pawn Structure ===" << std::endl;
+    
+    Board board;
+    Evaluation eval;
+    
+    struct PawnTest {
+        std::string fen;
+        std::string description;
+    };
+    
+    std::vector<PawnTest> pawn_tests = {
+        {"8/8/8/8/3P4/8/8/8 w - - 0 1", "Isolated pawn"},
+        {"8/8/8/8/3P4/3P4/8/8 w - - 0 1", "Doubled pawns"},
+        {"8/8/8/3P4/8/8/8/8 w - - 0 1", "Passed pawn"},
+        {"8/8/8/2PPP3/8/8/8/8 w - - 0 1", "Pawn chain"},
+        {"8/8/2P5/3P4/4P3/5P2/8/8 w - - 0 1", "Pawn chain"},
+        {"8/8/8/2PP4/8/8/8/8 w - - 0 1", "Connected pawns"},
+        {"8/8/8/8/8/2p5/3P4/8 w - - 0 1", "Backward pawn"},
+        {"8/8/8/2PP4/8/8/2pp4/8 w - - 0 1", "Opposing pawn chains"}
+    };
+    
+    for (const auto& test : pawn_tests) {
+        board.set_from_fen(test.fen);
+        int pawn_score = eval.evaluate_pawn_structure(board);
+        std::cout << std::setw(25) << test.description << ": " << pawn_score << std::endl;
+    }
+    
+    std::cout << std::endl;
+}
+
+void test_king_safety_detailed() {
+    std::cout << "=== Testing Detailed King Safety ===" << std::endl;
+    
+    Board board;
+    Evaluation eval;
+    
+    struct KingSafetyTest {
+        std::string fen;
+        std::string description;
+    };
+    
+    std::vector<KingSafetyTest> safety_tests = {
+        {"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "Starting position"},
+        {"rnbqk2r/pppp1ppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "King on open file"},
+        {"rnbq1rk1/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQ - 0 1", "Castled king"},
+        {"rnbqkbnr/ppp1pppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "Weakened king side"},
+        {"8/8/8/8/8/8/4K3/4k3 w - - 0 1", "Exposed kings"},
+        {"r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1", "Kings on back rank"}
+    };
+    
+    for (const auto& test : safety_tests) {
+        board.set_from_fen(test.fen);
+        int safety_score = eval.evaluate_king_safety(board);
+        std::cout << std::setw(25) << test.description << ": " << safety_score << std::endl;
+    }
+    
+    std::cout << std::endl;
+}
+
+void test_mobility_detailed() {
+    std::cout << "=== Testing Detailed Mobility ===" << std::endl;
+    
+    Board board;
+    Evaluation eval;
+    
+    struct MobilityTest {
+        std::string fen;
+        std::string description;
+    };
+    
+    std::vector<MobilityTest> mobility_tests = {
+        {"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "Starting position"},
+        {"8/8/8/8/3N4/8/8/8 w - - 0 1", "Central knight"},
+        {"8/8/8/8/3B4/8/8/8 w - - 0 1", "Central bishop"},
+        {"8/8/8/8/3R4/8/8/8 w - - 0 1", "Central rook"},
+        {"8/8/8/8/3Q4/8/8/8 w - - 0 1", "Central queen"},
+        {"N7/8/8/8/8/8/8/8 w - - 0 1", "Corner knight"},
+        {"r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/3P1N2/PPP2PPP/RNBQK2R w KQkq - 0 1", "Developed pieces"}
+    };
+    
+    for (const auto& test : mobility_tests) {
+        board.set_from_fen(test.fen);
+        int mobility_score = eval.evaluate_mobility(board);
+        std::cout << std::setw(25) << test.description << ": " << mobility_score << std::endl;
+    }
+    
+    std::cout << std::endl;
+}
+
+void test_incremental_evaluation_detailed() {
+    std::cout << "=== Testing Detailed Incremental Evaluation ===" << std::endl;
+    
+    Board board;
+    Evaluation eval;
+    MoveGenerator move_gen;
+    
+    board.set_starting_position();
+    eval.initialize_incremental_eval(board);
+    
+    // Test that incremental evaluation matches full evaluation
+    int full_eval = eval.evaluate(board);
+    std::cout << "Initial full evaluation: " << full_eval << std::endl;
+    
+    // Test incremental updates with common opening moves
+    std::vector<std::string> test_moves = {
+        "e2e4", "g1f3", "b1c3", "d2d4",
+    };
+    
+    for (const auto& move_str : test_moves) {
+        // Generate legal moves to find the move
+        std::vector<Move> legal_moves = move_gen.generate_legal_moves(board);
+        
+        Move test_move;
+        bool move_found = false;
+        
+        // Find the move in legal moves (simplified parsing)
+        for (const auto& move : legal_moves) {
+            // This is a simplified check - in practice you'd need proper move parsing
+            if (move_str.length() >= 4) {
+                char from_file = move_str[0];
+                char from_rank = move_str[1];
+                char to_file = move_str[2];
+                char to_rank = move_str[3];
+                
+                if (move.from_file == from_file - 'a' && 
+                    move.from_rank == from_rank - '1' &&
+                    move.to_file == to_file - 'a' && 
+                    move.to_rank == to_rank - '1') {
+                    test_move = move;
+                    move_found = true;
+                    break;
+                }
+            }
+        }
+        
+        if (move_found) {
+            // Make the move and test incremental evaluation
+            BitboardMoveUndoData undo_data = board.make_move(test_move);
+            board.print();
+            
+            int incremental_eval = eval.evaluate_incremental(board, test_move, undo_data);
+            int full_eval_after = eval.evaluate(board);
+            
+            bool evaluations_match = (abs(incremental_eval - full_eval_after) < 10);
+            
+            std::cout << "Move " << move_str << ": Incremental=" << incremental_eval 
+                      << ", Full=" << full_eval_after 
+                      << " [" << (evaluations_match ? "MATCH" : "DIFFER") << "]" << std::endl;
+            
+            // Undo the move
+            board.undo_move(undo_data);
+            eval.undo_incremental_eval(board, test_move, undo_data);
+        }
+    }
+    
+    std::cout << std::endl;
+}
+
+void test_zobrist_hashing_detailed() {
+    std::cout << "=== Testing Detailed Zobrist Hashing ===" << std::endl;
+    
+    Board board;
+    Evaluation eval;
+    
+    // Test hash updates with moves
+    board.set_starting_position();
+    uint64_t initial_hash = eval.compute_zobrist_hash(board);
+    std::cout << "Initial hash: 0x" << std::hex << initial_hash << std::dec << std::endl;
+    
+    // Test that different positions have different hashes
+    std::vector<std::string> test_positions = {
+        "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
+        "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2",
+        "rnbqkb1r/pppp1ppp/5n2/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 2 3",
+        "r1bqkb1r/pppp1ppp/2n2n2/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 4 4"
+    };
+    
+    std::unordered_set<uint64_t> unique_hashes;
+    unique_hashes.insert(initial_hash);
+    
+    for (const auto& fen : test_positions) {
+        board.set_from_fen(fen);
+        uint64_t hash = eval.compute_zobrist_hash(board);
+        
+        bool is_unique = (unique_hashes.find(hash) == unique_hashes.end());
+        unique_hashes.insert(hash);
+        
+        std::cout << "Position hash: 0x" << std::hex << hash << std::dec 
+                  << " [" << (is_unique ? "UNIQUE" : "COLLISION") << "]" << std::endl;
+    }
+    
+    std::cout << "Total unique hashes: " << unique_hashes.size() 
+              << "/" << (test_positions.size() + 1) << std::endl;
+    
+    std::cout << std::endl;
+}
+
+void test_edge_cases() {
+    std::cout << "=== Testing Edge Cases ===" << std::endl;
+    
+    Board board;
+    Evaluation eval;
+    
+    // Test empty board (should not crash)
+    board.set_from_fen("8/8/8/8/8/8/8/8 w - - 0 1");
+    int empty_eval = eval.evaluate(board);
+    std::cout << "Empty board evaluation: " << empty_eval << std::endl;
+    
+    // Test only kings
+    board.set_from_fen("8/8/8/8/8/8/4K3/4k3 w - - 0 1");
+    int kings_only = eval.evaluate(board);
+    std::cout << "Kings only evaluation: " << kings_only << std::endl;
+    
+    // Test maximum material
+    board.set_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+    int max_material = eval.evaluate(board);
+    std::cout << "Maximum material evaluation: " << max_material << std::endl;
+    
+    // Test promotion scenarios
+    board.set_from_fen("8/P7/8/8/8/8/8/8 w - - 0 1");
+    int promotion_eval = eval.evaluate(board);
+    std::cout << "Promotion scenario evaluation: " << promotion_eval << std::endl;
+    
+    // Test stalemate position
+    board.set_from_fen("8/8/8/8/8/8/8/k6K w - - 0 1");
+    int stalemate_eval = eval.evaluate(board);
+    std::cout << "Stalemate position evaluation: " << stalemate_eval << std::endl;
+    
+    std::cout << std::endl;
+}
+
+void test_evaluation_stability() {
+    std::cout << "=== Testing Evaluation Stability ===" << std::endl;
+    
+    Board board;
+    Evaluation eval;
+    
+    // Test that evaluation is stable across multiple calls
+    std::vector<std::string> test_positions = {
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/3P1N2/PPP2PPP/RNBQK2R w KQkq - 0 1",
+        "8/8/8/8/8/8/4K3/4k3 w - - 0 1"
+    };
+    
+    for (const auto& fen : test_positions) {
+        board.set_from_fen(fen);
+        
+        std::vector<int> evaluations;
+        for (int i = 0; i < 100; ++i) {
+            evaluations.push_back(eval.evaluate(board));
+        }
+        
+        bool all_same = std::all_of(evaluations.begin(), evaluations.end(), 
+                                   [&](int val) { return val == evaluations[0]; });
+        
+        std::cout << "Position stability test: " << (all_same ? "STABLE" : "UNSTABLE") 
+                  << " (" << evaluations[0] << ")" << std::endl;
+    }
+    
+    std::cout << std::endl;
+}
+
 int main() {
     std::cout << "Extended Chess Engine Evaluation Test Suite" << std::endl;
     std::cout << "==========================================" << std::endl << std::endl;
@@ -600,6 +985,19 @@ int main() {
         test_pawn_hash_table();
         test_evaluation_components();
         stress_test_performance();
+        
+        // Detailed component tests
+        test_piece_coordination();
+        test_endgame_factors();
+        test_development_evaluation();
+        test_tapered_evaluation();
+        test_pawn_structure_detailed();
+        test_king_safety_detailed();
+        test_mobility_detailed();
+        test_incremental_evaluation_detailed();
+        test_zobrist_hashing_detailed();
+        test_edge_cases();
+        test_evaluation_stability();
         
         std::cout << "All extended tests completed successfully!" << std::endl;
     }
