@@ -36,9 +36,9 @@ struct Move {
     std::string to_algebraic() const {
         std::string result = "";
         result += static_cast<char>('a' + from_file);
-        result += static_cast<char>('1' + (7 - from_rank));
+        result += static_cast<char>('1' + from_rank);
         result += static_cast<char>('a' + to_file);
-        result += static_cast<char>('1' + (7 - to_rank));
+        result += static_cast<char>('1' + to_rank);
         
         // Add promotion piece if applicable
         if (promotion_piece != '.') {

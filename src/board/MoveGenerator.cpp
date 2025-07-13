@@ -136,6 +136,7 @@ std::vector<Move> MoveGenerator::generate_legal_moves(Board& board) {
     }
 
     // Order moves for better search performance
+    // TODO: (Refactor) Check the existing ordering algorithm.
     order_moves(legal_moves, board);
     return legal_moves;
 }

@@ -69,6 +69,11 @@ add_executable(test_evaluation
     src/main/test_evaluation.cpp
 )
 
+# Create search test executable
+add_executable(test_search
+        src/main/test_search.cpp
+)
+
 # Link bitboard library to bitboard test executable
 target_link_libraries(test_bitboards bitboard)
 
@@ -86,3 +91,6 @@ target_link_libraries(test_optimizations bitboard)
 
 # Link libraries to evaluation test executable
 target_link_libraries(test_evaluation engine bitboard)
+
+# Link libraries to search test executable
+target_link_libraries(test_search engine bitboard)
