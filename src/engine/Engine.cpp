@@ -6,7 +6,7 @@ Engine::Engine() : board(), current_position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP
 Engine::~Engine() = default;
 
 void Engine::set_position(std::string_view fen) {
-    board.set_position(fen);
+    board.set_from_fen(std::string(fen));
     current_position = fen;
 }
 

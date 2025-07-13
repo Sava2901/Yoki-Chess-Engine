@@ -64,6 +64,11 @@ add_executable(test_optimizations
         src/main/test_optimizations.cpp
 )
 
+# Create evaluation test executable
+add_executable(test_evaluation
+    src/main/test_evaluation.cpp
+)
+
 # Link bitboard library to bitboard test executable
 target_link_libraries(test_bitboards bitboard)
 
@@ -78,3 +83,6 @@ target_link_libraries(test_piece_movement bitboard)
 
 # Link bitboard library to optimizations test executable
 target_link_libraries(test_optimizations bitboard)
+
+# Link libraries to evaluation test executable
+target_link_libraries(test_evaluation engine bitboard)
