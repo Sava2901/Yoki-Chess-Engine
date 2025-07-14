@@ -1,13 +1,99 @@
 #include "Search.h"
 #include <algorithm>
-
+#include <iostream>
 Search::Search() {
     current_stats.reset();
 }
 
-Search::SearchResult Search::find_best_move(Board& board, int max_depth) {
-    // Use a large time limit for depth-based search
-    return find_best_move_timed(board, std::chrono::milliseconds(600));
+Search::SearchResult Search::find_best_move(Board& board, int max_depth, std::chrono::milliseconds time_limit) {
+    SearchResult result;
+    current_stats.reset();
+    
+    auto start_time = std::chrono::steady_clock::now();
+    
+    // Generate all legal moves for the current player
+    std::vector<Move> legal_moves = move_generator.generate_legal_moves(board);
+    
+    if (legal_moves.empty()) {
+        // No legal moves - checkmate or stalemate
+        if (move_generator.is_in_check(board, board.get_active_color())) {
+            result.is_mate = true;
+            result.mate_in = 0;
+            result.score = -MATE_SCORE;
+        } else {
+            result.score = 0; // Stalemate
+        }
+        return result;
+    }
+    
+    // Order moves for better alpha-beta pruning
+    // order_moves(legal_moves, board);
+    
+    Move best_move = legal_moves[0];
+    int best_score = ALPHA_INIT;
+    
+    // Search up to the specified max_depth with optional time failsafe
+    for (int depth = 1; depth <= max_depth; ++depth) {
+        // Check time limit only if specified (time_limit > 0)
+        if (time_limit.count() > 0 && is_time_up(start_time, time_limit)) {
+            break;
+        }
+        
+        int alpha = ALPHA_INIT;
+        int beta = BETA_INIT;
+        Move current_best_move = legal_moves[0];
+        int current_best_score = ALPHA_INIT;
+        
+        for (const Move& move : legal_moves) {
+            // Check time limit only if specified
+            if (time_limit.count() > 0 && is_time_up(start_time, time_limit)) {
+                break;
+            }
+            
+            // Make the move
+            auto undo_data = board.make_move(move);
+            
+            // Search with minimax - now the opponent is to move
+            int score = -minimax(board, depth - 1, -beta, -alpha, start_time, time_limit);
+            
+            // Undo the move immediately
+            board.undo_move(undo_data);
+            
+            if (score > current_best_score) {
+                current_best_score = score;
+                current_best_move = move;
+            }
+            
+            alpha = std::max(alpha, score);
+            if (alpha >= beta) {
+                current_stats.beta_cutoffs++;
+                break; // Beta cutoff
+            }
+        }
+        
+        // Update best move and score if we completed the depth or no time limit
+        if (time_limit.count() == 0 || !is_time_up(start_time, time_limit)) {
+            best_move = current_best_move;
+            best_score = current_best_score;
+            result.depth = depth;
+            
+            // Check for mate
+            if (is_mate_score(best_score)) {
+                result.is_mate = true;
+                result.mate_in = mate_distance(best_score);
+                break; // Found mate, no need to search deeper
+            }
+        }
+    }
+    
+    result.best_move = best_move;
+    result.score = best_score;
+    result.stats = current_stats;
+    
+    auto end_time = std::chrono::steady_clock::now();
+    result.stats.time_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+    
+    return result;
 }
 
 Search::SearchResult Search::find_best_move_timed(Board& board, std::chrono::milliseconds time_limit) {
@@ -16,7 +102,7 @@ Search::SearchResult Search::find_best_move_timed(Board& board, std::chrono::mil
     
     auto start_time = std::chrono::steady_clock::now();
     
-    // Generate all legal moves
+    // Generate all legal moves for the current player
     std::vector<Move> legal_moves = move_generator.generate_legal_moves(board);
     
     if (legal_moves.empty()) {
@@ -49,17 +135,17 @@ Search::SearchResult Search::find_best_move_timed(Board& board, std::chrono::mil
         int current_best_score = ALPHA_INIT;
         
         for (const Move& move : legal_moves) {
-            if (is_time_up(start_time, time_limit)) {
-                break;
-            }
+        if (time_limit.count() > 0 && is_time_up(start_time, time_limit)) {
+            break;
+        }
             
             // Make the move
             auto undo_data = board.make_move(move);
             
-            // Search with minimax
-            int score = -minimax(board, depth - 1, -beta, -alpha, false, start_time, time_limit);
+            // Search with minimax - now the opponent is to move
+            int score = -minimax(board, depth - 1, -beta, -alpha, start_time, time_limit);
             
-            // Undo the move
+            // Undo the move immediately
             board.undo_move(undo_data);
             
             if (score > current_best_score) {
@@ -99,13 +185,13 @@ Search::SearchResult Search::find_best_move_timed(Board& board, std::chrono::mil
     return result;
 }
 
-int Search::minimax(Board& board, int depth, int alpha, int beta, bool maximizing_player,
+int Search::minimax(Board& board, int depth, int alpha, int beta,
                    std::chrono::steady_clock::time_point start_time,
                    std::chrono::milliseconds time_limit) {
     current_stats.nodes_searched++;
     
-    // Check time limit
-    if (is_time_up(start_time, time_limit)) {
+    // Check time limit only if specified
+    if (time_limit.count() > 0 && is_time_up(start_time, time_limit)) {
         return 0; // Return neutral score if time is up
     }
     
@@ -122,14 +208,14 @@ int Search::minimax(Board& board, int depth, int alpha, int beta, bool maximizin
         return 0;
     }
     
-    // Generate legal moves
+    // Generate legal moves for the current active player
     std::vector<Move> legal_moves = move_generator.generate_legal_moves(board);
     
     if (legal_moves.empty()) {
         // No legal moves - checkmate or stalemate
         if (move_generator.is_in_check(board, board.get_active_color())) {
-            // Checkmate - return mate score adjusted for depth
-            return maximizing_player ? -MATE_SCORE + depth : MATE_SCORE - depth;
+            // Checkmate - return negative mate score (bad for current player)
+            return -MATE_SCORE + depth;
         }
         // Stalemate
         return 0;
@@ -138,51 +224,36 @@ int Search::minimax(Board& board, int depth, int alpha, int beta, bool maximizin
     // Order moves for better pruning
     order_moves(legal_moves, board);
     
-    if (maximizing_player) {
-        int max_eval = ALPHA_INIT;
-        
-        for (const Move& move : legal_moves) {
-            if (is_time_up(start_time, time_limit)) {
-                break;
-            }
-            
-            auto undo_data = board.make_move(move);
-            int eval = minimax(board, depth - 1, alpha, beta, false, start_time, time_limit);
-            board.undo_move(undo_data);
-            
-            max_eval = std::max(max_eval, eval);
-            alpha = std::max(alpha, eval);
-            
-            if (beta <= alpha) {
-                current_stats.beta_cutoffs++;
-                break; // Beta cutoff
-            }
+    int best_score = ALPHA_INIT;
+    
+    for (const Move& move : legal_moves) {
+        if (is_time_up(start_time, time_limit)) {
+            break;
         }
         
-        return max_eval;
-    } else {
-        int min_eval = BETA_INIT;
+        // Make the move
+        board.print();
+        auto undo_data = board.make_move(move);
         
-        for (const Move& move : legal_moves) {
-            if (is_time_up(start_time, time_limit)) {
-                break;
-            }
-            
-            auto undo_data = board.make_move(move);
-            int eval = minimax(board, depth - 1, alpha, beta, true, start_time, time_limit);
-            board.undo_move(undo_data);
-            
-            min_eval = std::min(min_eval, eval);
-            beta = std::min(beta, eval);
-            
-            if (beta <= alpha) {
-                current_stats.beta_cutoffs++;
-                break; // Beta cutoff
-            }
+        // Recursive call with negated alpha-beta window
+        // After making a move, it's the opponent's turn, so we negate the result
+        int score = -minimax(board, depth - 1, -beta, -alpha, start_time, time_limit);
+        std::cout << "Score for move " << move.to_algebraic() << ": " << score << "\n";
+        // Undo the move immediately
+
+        board.print();
+        board.undo_move(undo_data);
+        
+        best_score = std::max(best_score, score);
+        alpha = std::max(alpha, score);
+        
+        if (alpha >= beta) {
+            current_stats.beta_cutoffs++;
+            break; // Beta cutoff
         }
-        
-        return min_eval;
     }
+    
+    return best_score;
 }
 
 bool Search::is_time_up(std::chrono::steady_clock::time_point start_time,

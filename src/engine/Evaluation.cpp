@@ -570,9 +570,14 @@ int Evaluation::evaluate_pawn_structure_for_color(const Board& board, Board::Col
         int rank = square >> 3;
         int file = square & 7;
         
-        // Check for isolated pawns
+        // Check for isolated pawns - reduced penalty in opening
         if (is_isolated_pawn(board, square, color)) {
-            score += EvalConstants::ISOLATED_PAWN_PENALTY;
+            GamePhase phase = get_game_phase(board);
+            if (phase == OPENING) {
+                score += EvalConstants::ISOLATED_PAWN_PENALTY_OPENING;
+            } else {
+                score += EvalConstants::ISOLATED_PAWN_PENALTY;
+            }
         }
         
         // Check for doubled pawns
@@ -648,6 +653,52 @@ int Evaluation::evaluate_king_safety_for_color(const Board& board, Board::Color 
     int expected_rank = (color == Board::WHITE) ? 0 : 7;
     if (king_rank == expected_rank && (king_file == 2 || king_file == 6)) {
         score += EvalConstants::CASTLING_BONUS;
+    }
+    
+    // Evaluate pawn moves that damage king safety
+    score += evaluate_king_safety_pawn_penalties(board, color);
+    
+    return score;
+}
+
+// Evaluate pawn moves that damage king safety
+int Evaluation::evaluate_king_safety_pawn_penalties(const Board& board, Board::Color color) const {
+    int score = 0;
+    int king_pos = board.get_king_position(color);
+    int king_file = king_pos & 7;
+    int king_rank = king_pos >> 3;
+    
+    Bitboard pawns = board.get_piece_bitboard(Board::PAWN, color);
+    
+    // Check for weakened king shelter (missing or advanced pawns in front of king)
+    for (int file_offset = -1; file_offset <= 1; ++file_offset) {
+        int check_file = king_file + file_offset;
+        if (static_cast<unsigned>(check_file) > 7) continue;
+        
+        bool has_shelter_pawn = false;
+        int shelter_rank = (color == Board::WHITE) ? king_rank + 1 : king_rank - 1;
+        
+        // Check if there's a pawn providing shelter
+        if (shelter_rank >= 0 && shelter_rank < 8) {
+            int shelter_square = (shelter_rank << 3) | check_file;
+            if (pawns & (1ULL << shelter_square)) {
+                has_shelter_pawn = true;
+            }
+        }
+        
+        // Penalty for missing king shelter
+        if (!has_shelter_pawn) {
+            score += EvalConstants::WEAKENED_KING_SHELTER_PENALTY;
+        }
+        
+        // Check for advanced pawns that weaken king safety
+        int advanced_rank = (color == Board::WHITE) ? king_rank + 2 : king_rank - 2;
+        if (advanced_rank >= 0 && advanced_rank < 8) {
+            int advanced_square = (advanced_rank << 3) | check_file;
+            if (pawns & (1ULL << advanced_square)) {
+                score += EvalConstants::PAWN_STORM_AGAINST_KING_PENALTY;
+            }
+        }
     }
     
     return score;
@@ -901,7 +952,83 @@ int Evaluation::evaluate_development_for_color(const Board& board, Board::Color 
         if (undeveloped_pieces > 1)
             score += EvalConstants::EARLY_QUEEN_DEVELOPMENT_PENALTY;
     }
+    
+    // Evaluate pawn moves that limit piece development
+    score += evaluate_development_limiting_pawn_penalties(board, color);
 
+    return score;
+}
+
+// Evaluate pawn moves that limit piece development
+int Evaluation::evaluate_development_limiting_pawn_penalties(const Board& board, Board::Color color) const {
+    int score = 0;
+    int back_rank = (color == Board::WHITE) ? 0 : 7;
+    int pawn_rank = (color == Board::WHITE) ? 1 : 6;
+    
+    Bitboard pawns = board.get_piece_bitboard(Board::PAWN, color);
+    Bitboard bishops = board.get_piece_bitboard(Board::BISHOP, color);
+    Bitboard knights = board.get_piece_bitboard(Board::KNIGHT, color);
+    
+    // Check for pawns blocking bishop development
+    // c-pawn blocking c1/c8 bishop
+    int c_pawn_square = (pawn_rank << 3) | 2;  // c2 for white, c7 for black
+    int c_bishop_square = (back_rank << 3) | 2;  // c1 for white, c8 for black
+    if ((pawns & (1ULL << c_pawn_square)) && (bishops & (1ULL << c_bishop_square))) {
+        score += EvalConstants::BISHOP_BLOCKING_PAWN_PENALTY;
+    }
+    
+    // f-pawn blocking f1/f8 bishop
+    int f_pawn_square = (pawn_rank << 3) | 5;  // f2 for white, f7 for black
+    int f_bishop_square = (back_rank << 3) | 5;  // f1 for white, f8 for black
+    if ((pawns & (1ULL << f_pawn_square)) && (bishops & (1ULL << f_bishop_square))) {
+        score += EvalConstants::BISHOP_BLOCKING_PAWN_PENALTY;
+    }
+    
+    // Check for pawns blocking knight development
+    // b-pawn advanced too early blocking knight
+    int b_knight_square = (back_rank << 3) | 1;  // b1 for white, b8 for black
+    int b3_square = ((color == Board::WHITE) ? 2 : 5) << 3 | 1;  // b3 for white, b6 for black
+    if ((pawns & (1ULL << b3_square)) && (knights & (1ULL << b_knight_square))) {
+        score += EvalConstants::KNIGHT_BLOCKING_PAWN_PENALTY;
+    }
+    
+    // g-pawn advanced too early blocking knight
+    int g_knight_square = (back_rank << 3) | 6;  // g1 for white, g8 for black
+    int g3_square = ((color == Board::WHITE) ? 2 : 5) << 3 | 6;  // g3 for white, g6 for black
+    if ((pawns & (1ULL << g3_square)) && (knights & (1ULL << g_knight_square))) {
+        score += EvalConstants::KNIGHT_BLOCKING_PAWN_PENALTY;
+    }
+    
+    // Check for premature center pawn advances that limit development
+    GamePhase phase = get_game_phase(board);
+    if (phase == OPENING) {
+        // Penalty for advancing center pawns too far too early
+        int d4_square = ((color == Board::WHITE) ? 3 : 4) << 3 | 3;  // d4 for white, d5 for black
+        int e4_square = ((color == Board::WHITE) ? 3 : 4) << 3 | 4;  // e4 for white, e5 for black
+        
+        // Count undeveloped pieces
+        int undeveloped_count = 0;
+        int knight_squares[2] = {(back_rank << 3) | 1, (back_rank << 3) | 6};
+        int bishop_squares[2] = {(back_rank << 3) | 2, (back_rank << 3) | 5};
+        
+        for (int sq : knight_squares) {
+            if (knights & (1ULL << sq)) undeveloped_count++;
+        }
+        for (int sq : bishop_squares) {
+            if (bishops & (1ULL << sq)) undeveloped_count++;
+        }
+        
+        // Penalty if center pawns are advanced while pieces are undeveloped
+        if (undeveloped_count >= 2) {
+            if (pawns & (1ULL << d4_square)) {
+                score += EvalConstants::CENTER_PAWN_PREMATURE_ADVANCE_PENALTY;
+            }
+            if (pawns & (1ULL << e4_square)) {
+                score += EvalConstants::CENTER_PAWN_PREMATURE_ADVANCE_PENALTY;
+            }
+        }
+    }
+    
     return score;
 }
 

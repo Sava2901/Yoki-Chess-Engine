@@ -35,12 +35,22 @@ namespace EvalConstants {
     
     // Pawn structure bonuses/penalties - enhanced
     constexpr int ISOLATED_PAWN_PENALTY = -12;
+    constexpr int ISOLATED_PAWN_PENALTY_OPENING = -6;  // Reduced penalty in opening
     constexpr int DOUBLED_PAWN_PENALTY = -18;
     constexpr int BACKWARD_PAWN_PENALTY = -8;
     constexpr int PASSED_PAWN_BONUS = 25;
     constexpr int CONNECTED_PAWNS_BONUS = 8;
     constexpr int PAWN_CHAIN_BONUS = 12;
     constexpr int ADVANCED_PASSED_PAWN_BONUS = 15; // Per rank advanced
+    
+    // King safety pawn penalties
+    constexpr int PAWN_STORM_AGAINST_KING_PENALTY = -20;
+    constexpr int WEAKENED_KING_SHELTER_PENALTY = -15;
+    
+    // Development limiting pawn penalties
+    constexpr int BISHOP_BLOCKING_PAWN_PENALTY = -25;
+    constexpr int KNIGHT_BLOCKING_PAWN_PENALTY = -20;
+    constexpr int CENTER_PAWN_PREMATURE_ADVANCE_PENALTY = -15;
     
     // King safety - enhanced
     constexpr int KING_SAFETY_BONUS = 15;
@@ -147,6 +157,8 @@ public:
     int evaluate_endgame_factors(const Board& board) const;
     int evaluate_development(const Board& board) const;
     int evaluate_development_for_color(const Board& board, Board::Color color) const;
+    int evaluate_king_safety_pawn_penalties(const Board& board, Board::Color color) const;
+    int evaluate_development_limiting_pawn_penalties(const Board& board, Board::Color color) const;
     
     // Tapered evaluation (interpolates between opening and endgame)
     int tapered_eval(int opening_score, int endgame_score, int phase_value) const;
@@ -168,33 +180,33 @@ private:
             {
                  0,  0,  0,  0,  0,  0,  0,  0,
                 50, 50, 50, 50, 50, 50, 50, 50,
-                10, 10, 20, 30, 30, 20, 10, 10,
-                 5,  5, 10, 25, 25, 10,  5,  5,
-                 0,  0,  0, 20, 20,  0,  0,  0,
-                 5, -5,-10,  0,  0,-10, -5,  5,
-                 5, 10, 10,-20,-20, 10, 10,  5,
+                10, 10, 20, 35, 35, 20, 10, 10,
+                 5,  5, 15, 30, 30, 15,  5,  5,
+                 0,  0,  5, 25, 25,  5,  0,  0,
+                 5, -5, -5, 10, 10, -5, -5,  5,
+                 5, 10, 10,-15,-15, 10, 10,  5,
                  0,  0,  0,  0,  0,  0,  0,  0
             },
             // Knights
             {
                 -50,-40,-30,-30,-30,-30,-40,-50,
-                -40,-20,  0,  0,  0,  0,-20,-40,
-                -30,  0, 10, 15, 15, 10,  0,-30,
-                -30,  5, 15, 20, 20, 15,  5,-30,
-                -30,  0, 15, 20, 20, 15,  0,-30,
-                -30,  5, 10, 15, 15, 10,  5,-30,
                 -40,-20,  0,  5,  5,  0,-20,-40,
-                -50,-40,-30,-30,-30,-30,-40,-50
+                -30,  5, 15, 20, 20, 15,  5,-30,
+                -30, 10, 20, 25, 25, 20, 10,-30,
+                -30,  5, 20, 25, 25, 20,  5,-30,
+                -30,  5, 15, 20, 20, 15,  5,-30,
+                -40,-20,  5, 10, 10,  5,-20,-40,
+                -50,-40,-20,-20,-20,-20,-40,-50
             },
             // Bishops
             {
                 -20,-10,-10,-10,-10,-10,-10,-20,
-                -10,  0,  0,  0,  0,  0,  0,-10,
-                -10,  0,  5, 10, 10,  5,  0,-10,
-                -10,  5,  5, 10, 10,  5,  5,-10,
-                -10,  0, 10, 10, 10, 10,  0,-10,
-                -10, 10, 10, 10, 10, 10, 10,-10,
                 -10,  5,  0,  0,  0,  0,  5,-10,
+                -10, 10, 10, 15, 15, 10, 10,-10,
+                -10,  5, 15, 20, 20, 15,  5,-10,
+                -10, 10, 15, 20, 20, 15, 10,-10,
+                -10, 15, 15, 15, 15, 15, 15,-10,
+                -10, 10,  5,  5,  5,  5, 10,-10,
                 -20,-10,-10,-10,-10,-10,-10,-20
             },
             // Rooks

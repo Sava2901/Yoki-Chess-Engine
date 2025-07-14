@@ -54,7 +54,7 @@ public:
     ~Search() = default;
     
     // Main search functions
-    SearchResult find_best_move(Board& board, int max_depth);
+    SearchResult find_best_move(Board& board, int max_depth, std::chrono::milliseconds time_limit = std::chrono::milliseconds(0));
     SearchResult find_best_move_timed(Board& board, std::chrono::milliseconds time_limit);
     
     // Configuration
@@ -64,7 +64,7 @@ public:
     
 private:
     // Core minimax algorithm
-    int minimax(Board& board, int depth, int alpha, int beta, bool maximizing_player, 
+    int minimax(Board& board, int depth, int alpha, int beta, 
                 std::chrono::steady_clock::time_point start_time, 
                 std::chrono::milliseconds time_limit);
     
