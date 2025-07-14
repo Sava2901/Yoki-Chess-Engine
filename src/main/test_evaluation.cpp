@@ -10,6 +10,7 @@
 #include <random>
 #include <unordered_set>
 #include <algorithm>
+#include <climits>
 
 void test_basic_evaluation() {
     std::cout << "=== Testing Basic Evaluation ===" << std::endl;
@@ -960,6 +961,209 @@ void test_evaluation_stability() {
     std::cout << std::endl;
 }
 
+void test_move_evaluations() {
+    std::cout << "=== Testing Move Evaluations ==="  << std::endl;
+    
+    Board board;
+    Evaluation eval;
+    MoveGenerator move_gen;
+    
+    // Test positions with their descriptions
+    std::vector<std::pair<std::string, std::string>> test_positions = {
+        {"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "Starting Position"},
+        {"r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/3P1N2/PPP2PPP/RNBQK2R w KQkq - 0 1", "Italian Game Opening"},
+        {"rnbqkb1r/ppp2ppp/3p1n2/4p3/2B1P3/3P1N2/PPP2PPP/RNBQK2R w KQkq - 0 1", "Italian Game - Black h6"},
+        {"r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/3P1N2/PPP2PPP/RNBQK2R w KQkq - 0 1", "Italian Game - Bc5"},
+        {"8/8/8/4k3/4P3/4K3/8/8 w - - 0 1", "King and Pawn Endgame"},
+        {"8/8/8/8/8/8/4K3/4k3 w - - 0 1", "King vs King"},
+        {"r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 1", "Italian Game Early"},
+        {"rnbqk2r/pppp1ppp/5n2/2b1p3/2B1P3/3P1N2/PPP2PPP/RNBQK2R w KQkq - 0 1", "Italian Game - Bc5 Early"},
+        {"r1bq1rk1/pppp1ppp/2n2n2/2b1p3/2B1P3/3P1N2/PPP2PPP/RNBQ1RK1 w - - 0 1", "Italian Game - Both Castled"},
+        {"8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", "Complex Endgame Position"}
+    };
+    
+    for (const auto& pos : test_positions) {
+        const std::string& fen = pos.first;
+        const std::string& description = pos.second;
+        
+        std::cout << "\n--- " << description << " ---" << std::endl;
+        std::cout << "FEN: " << fen << std::endl;
+        
+        // Set up the position
+        board.set_from_fen(fen);
+        
+        // Get the base evaluation of the position
+        int base_eval = eval.evaluate(board);
+        std::cout << "Base position evaluation: " << base_eval << " cp" << std::endl;
+
+        // Generate all legal moves
+        std::vector<Move> legal_moves = move_gen.generate_legal_moves(board);
+        std::cout << "Legal moves found: " << legal_moves.size() << std::endl;
+        
+        if (legal_moves.empty()) {
+            std::cout << "No legal moves available (checkmate or stalemate)" << std::endl;
+            continue;
+        }
+        
+        // Evaluate each move
+        std::vector<std::pair<Move, int>> move_evaluations;
+        
+        for (const Move& move : legal_moves) {
+            // Make the move
+            BitboardMoveUndoData undo_data = board.make_move(move);
+            move.print();
+            board.print();
+            eval.print_evaluation_breakdown(board);
+
+            // Evaluate the position after the move
+            int move_eval = eval.evaluate(board);  // Negate because it's opponent's turn
+            move_evaluations.push_back({move, move_eval});
+            
+            // Undo the move
+            board.undo_move(undo_data);
+            
+        }
+        
+        // Sort moves by evaluation (best first)
+        std::sort(move_evaluations.begin(), move_evaluations.end(), 
+                 [](const std::pair<Move, int>& a, const std::pair<Move, int>& b) {
+                     return a.second > b.second;
+                 });
+        
+        // Display top 10 moves (or all if fewer than 10)
+        int moves_to_show = std::min(10, static_cast<int>(move_evaluations.size()));
+        std::cout << "\nTop " << moves_to_show << " moves by evaluation:" << std::endl;
+        
+        for (int i = 0; i < moves_to_show; ++i) {
+            const Move& move = move_evaluations[i].first;
+            int eval_score = move_evaluations[i].second;
+            int eval_diff = eval_score - base_eval;
+            
+            std::cout << std::setw(2) << (i + 1) << ". " 
+                      << move.to_algebraic() << " "
+                      << std::setw(6) << eval_score << " cp "
+                      << "(" << std::showpos << eval_diff << std::noshowpos << ")";
+            
+            // Add move type information
+            if (move.is_capture()) {
+                std::cout << " [Capture: " << move.captured_piece << "]";
+            }
+            if (move.is_promotion()) {
+                std::cout << " [Promotion: " << move.promotion_piece << "]";
+            }
+            if (move.is_castling) {
+                std::cout << " [Castling]";
+            }
+            if (move.is_en_passant) {
+                std::cout << " [En Passant]";
+            }
+            
+            std::cout << std::endl;
+        }
+        
+        // Show worst moves too (bottom 3)
+        if (move_evaluations.size() > 3) {
+            std::cout << "\nWorst 3 moves:" << std::endl;
+            int start_idx = std::max(0, static_cast<int>(move_evaluations.size()) - 3);
+            
+            for (int i = start_idx; i < static_cast<int>(move_evaluations.size()); ++i) {
+                const Move& move = move_evaluations[i].first;
+                int eval_score = move_evaluations[i].second;
+                int eval_diff = eval_score - base_eval;
+                
+                std::cout << std::setw(2) << (i + 1) << ". " 
+                          << move.to_algebraic() << " "
+                          << std::setw(6) << eval_score << " cp "
+                          << "(" << std::showpos << eval_diff << std::noshowpos << ")" << std::endl;
+            }
+        }
+        
+        // Calculate evaluation statistics
+        if (!move_evaluations.empty()) {
+            int best_eval = move_evaluations.front().second;
+            int worst_eval = move_evaluations.back().second;
+            int eval_range = best_eval - worst_eval;
+            
+            // Calculate average evaluation
+            int total_eval = 0;
+            for (const auto& move_eval : move_evaluations) {
+                total_eval += move_eval.second;
+            }
+            int avg_eval = total_eval / static_cast<int>(move_evaluations.size());
+            
+            std::cout << "\nEvaluation Statistics:" << std::endl;
+            std::cout << "  Best move eval:  " << std::setw(6) << best_eval << " cp" << std::endl;
+            std::cout << "  Worst move eval: " << std::setw(6) << worst_eval << " cp" << std::endl;
+            std::cout << "  Average eval:    " << std::setw(6) << avg_eval << " cp" << std::endl;
+            std::cout << "  Evaluation range: " << std::setw(6) << eval_range << " cp" << std::endl;
+        }
+    }
+    
+    std::cout << std::endl;
+}
+
+void test_custom_fen_move_evaluations() {
+    std::cout << "=== Testing Custom FEN Move Evaluations ===" << std::endl;
+    
+    Board board;
+    Evaluation eval;
+    MoveGenerator move_gen;
+    
+    // Allow user to input custom FEN positions
+    std::vector<std::string> custom_fens = {
+        // Add your custom FEN positions here
+        "r2qkb1r/ppp2ppp/2np1n2/2b1p3/2B1P3/3P1N2/PPP2PPP/RNBQK2R w KQkq - 0 1",  // Ruy Lopez
+        "rnbqkb1r/pp1ppppp/5n2/2p5/2P5/8/PP1PPPPP/RNBQKBNR w KQkq - 0 1",           // Sicilian Defense
+        "rnbqkb1r/pppppppp/5n2/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",            // King's Pawn Opening
+    };
+    
+    for (const std::string& fen : custom_fens) {
+        std::cout << "\n--- Custom Position ---" << std::endl;
+        std::cout << "FEN: " << fen << std::endl;
+        
+        try {
+            board.set_from_fen(fen);
+            
+            // Get base evaluation
+            int base_eval = eval.evaluate(board);
+            std::cout << "Position evaluation: " << base_eval << " cp" << std::endl;
+            
+            // Generate and evaluate moves
+            std::vector<Move> legal_moves = move_gen.generate_legal_moves(board);
+            std::cout << "Legal moves: " << legal_moves.size() << std::endl;
+            
+            if (!legal_moves.empty()) {
+                // Find best move
+                Move best_move;
+                int best_eval = INT_MIN;
+                
+                for (const Move& move : legal_moves) {
+                    // Make the move
+                    BitboardMoveUndoData undo_data = board.make_move(move);
+                    
+                    // Evaluate the position after the move
+                    int move_eval = -eval.evaluate(board);
+                    if (move_eval > best_eval) {
+                        best_eval = move_eval;
+                        best_move = move;
+                    }
+                    
+                    // Undo the move
+                    board.undo_move(undo_data);
+                }
+                
+                std::cout << "Best move: " << best_move.to_algebraic() 
+                          << " (" << best_eval << " cp)" << std::endl;
+            }
+        }
+        catch (const std::exception& e) {
+            std::cout << "Error processing FEN: " << e.what() << std::endl;
+        }
+    }
+    
+    std::cout << std::endl;
+}
+
 int main() {
     std::cout << "Extended Chess Engine Evaluation Test Suite" << std::endl;
     std::cout << "==========================================" << std::endl << std::endl;
@@ -974,7 +1178,7 @@ int main() {
         test_pawn_structure();
         test_material_values();
         test_performance();
-        
+
         // Extended comprehensive tests
         test_position_evaluations();
         test_evaluation_consistency();
@@ -985,7 +1189,7 @@ int main() {
         test_pawn_hash_table();
         test_evaluation_components();
         stress_test_performance();
-        
+
         // Detailed component tests
         test_piece_coordination();
         test_endgame_factors();
@@ -998,6 +1202,8 @@ int main() {
         test_zobrist_hashing_detailed();
         test_edge_cases();
         test_evaluation_stability();
+        test_move_evaluations();
+        test_custom_fen_move_evaluations();
         
         std::cout << "All extended tests completed successfully!" << std::endl;
     }

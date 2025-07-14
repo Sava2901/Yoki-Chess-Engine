@@ -510,6 +510,7 @@ int Evaluation::evaluate_piece_square_tables(const Board& board) const {
         const Board::PieceType piece_type = Board::char_to_piece_type(piece);
         const int side_multiplier = (color == Board::WHITE) ? 1 : -1;
 
+//        std::cout << piece_type << " " << color << " " << square << " " << get_piece_square_value(piece_type, color, square, phase) << std::endl;
         score += side_multiplier * get_piece_square_value(piece_type, color, square, phase);
     }
 
@@ -519,12 +520,17 @@ int Evaluation::evaluate_piece_square_tables(const Board& board) const {
 
 // Get piece-square value for a specific piece
 int Evaluation::get_piece_square_value(Board::PieceType piece_type, Board::Color color, int square, GamePhase phase) const {
-    // For kings in endgame, use special endgame table
-    if (piece_type == Board::KING && phase == ENDGAME) {
-        return color == Board::WHITE ? KING_ENDGAME_PST[square] : KING_ENDGAME_PST[mirror_square(square)];
+    // Convert GamePhase to array index
+    int phase_index;
+    switch (phase) {
+        case OPENING: phase_index = 0; break;
+        case MIDDLEGAME: phase_index = 1; break;
+        case ENDGAME: phase_index = 2; break;
+        default: phase_index = 1; // Default to middlegame
     }
     
-    return PST[color][piece_type][square];
+    return color == Board::WHITE ? PST[piece_type][phase_index][mirror_square(square)] 
+                                 : PST[piece_type][phase_index][(square)];
 }
 
 // Pawn structure evaluation
@@ -569,15 +575,11 @@ int Evaluation::evaluate_pawn_structure_for_color(const Board& board, Board::Col
 
         int rank = square >> 3;
         int file = square & 7;
-        
+
+        // TODO: (BUGFIX) Considers every pawn that has no pawns next to it isolated
         // Check for isolated pawns - reduced penalty in opening
         if (is_isolated_pawn(board, square, color)) {
-            GamePhase phase = get_game_phase(board);
-            if (phase == OPENING) {
-                score += EvalConstants::ISOLATED_PAWN_PENALTY_OPENING;
-            } else {
-                score += EvalConstants::ISOLATED_PAWN_PENALTY;
-            }
+            score += EvalConstants::ISOLATED_PAWN_PENALTY;
         }
         
         // Check for doubled pawns
@@ -656,7 +658,7 @@ int Evaluation::evaluate_king_safety_for_color(const Board& board, Board::Color 
     }
     
     // Evaluate pawn moves that damage king safety
-    score += evaluate_king_safety_pawn_penalties(board, color);
+    // score += evaluate_king_safety_pawn_penalties(board, color);
     
     return score;
 }

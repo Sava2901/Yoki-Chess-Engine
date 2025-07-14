@@ -3,6 +3,7 @@
 
 #include <string>
 #include <vector>
+#include <iostream>
 
 // Move structure to represent a chess move
 // TODO: Look into using a more efficient representation for moves
@@ -54,7 +55,19 @@ struct Move {
                to_rank >= 0 && to_rank < 8 && to_file >= 0 && to_file < 8 &&
                piece != '.' && !(from_rank == to_rank && from_file == to_file);
     }
-    
+
+    bool is_capture() const {
+        return captured_piece == '.';
+    }
+
+    bool is_promotion() const {
+        return promotion_piece == '.';
+    }
+
+    void print() const {
+        std::cout << this->to_algebraic() << std::endl;
+    }
+
     // Equality operator
     bool operator==(const Move& other) const {
         return from_rank == other.from_rank && from_file == other.from_file &&
