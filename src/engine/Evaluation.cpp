@@ -576,33 +576,36 @@ int Evaluation::evaluate_pawn_structure_for_color(const Board& board, Board::Col
         int rank = square >> 3;
         int file = square & 7;
 
-        // TODO: (BUGFIX) Considers every pawn that has no pawns next to it isolated
+//        std::cout << color << std::endl;
         // Check for isolated pawns - reduced penalty in opening
         if (is_isolated_pawn(board, square, color)) {
             score += EvalConstants::ISOLATED_PAWN_PENALTY;
+//            std::cout << "Isolated pawn " << score << " at: " << rank << " " << file << std::endl;
         }
         
         // Check for doubled pawns
         if (is_doubled_pawn(board, square, color)) {
             score += EvalConstants::DOUBLED_PAWN_PENALTY;
+//            std::cout << "Doubled pawn " << score << " at: " << rank << " " << file << std::endl;
         }
         
         // Check for backward pawns
         if (is_backward_pawn(board, square, color)) {
             score += EvalConstants::BACKWARD_PAWN_PENALTY;
+//            std::cout << "Backward pawn " << score << " at: " << rank << " " << file << std::endl;
         }
 
-        // TODO: (BUGFIX) Returns true in false cases
         // Check for passed pawns
-        // if (is_passed_pawn(board, square, color)) {
-        //     score += EvalConstants::PASSED_PAWN_BONUS;
-        //     score += get_passed_pawn_rank_bonus(square, color);
-        //     // std::cout << "Passed pawn " << score << std::endl;
-        // }
+         if (is_passed_pawn(board, square, color)) {
+             score += EvalConstants::PASSED_PAWN_BONUS;
+             score += get_passed_pawn_rank_bonus(square, color);
+//             std::cout << "Passed pawn " << score << " at: " << rank << " " << file << std::endl;
+         }
         
         // Check for pawn chains
         if (is_pawn_chain(board, square, color)) {
             score += EvalConstants::PAWN_CHAIN_BONUS;
+//            std::cout << "Pawn chain " << score << " at: " << rank << " " << file << std::endl;
         }
 
         // Connected pawns (left/right on same rank)
@@ -612,6 +615,7 @@ int Evaluation::evaluate_pawn_structure_for_color(const Board& board, Board::Col
             int adjacent_square = (rank << 3) | adjacent_file; // rank * 8 + adjacent_file
             if (pawns & (1ULL << adjacent_square)) {
                 score += EvalConstants::CONNECTED_PAWNS_BONUS;
+//                std::cout << "Connected pawn " << score << " at: " << rank << " " << file << std::endl;
                 break;
             }
         }
@@ -658,7 +662,7 @@ int Evaluation::evaluate_king_safety_for_color(const Board& board, Board::Color 
     }
     
     // Evaluate pawn moves that damage king safety
-    // score += evaluate_king_safety_pawn_penalties(board, color);
+     score += evaluate_king_safety_pawn_penalties(board, color);
     
     return score;
 }
@@ -1255,7 +1259,13 @@ bool Evaluation::is_backward_pawn(const Board& board, int square, Board::Color c
     
     // Create mask for adjacent files at or behind current rank
     Bitboard support_mask = 0ULL;
-    
+
+    /* TODO: check if this optimization is viable
+    For White: support_mask |= left_file & ((1ULL << (rank * 8)) - 1);
+
+    For Black: support_mask |= left_file & (~((1ULL << (rank * 8)) - 1));
+    */
+
     // Check left adjacent file
     if (file > 0) {
         Bitboard left_file = file_masks[file - 1];

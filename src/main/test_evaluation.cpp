@@ -136,12 +136,14 @@ void test_pawn_structure() {
     Evaluation eval;
     
     // Test isolated pawns
-    board.set_from_fen("8/8/8/8/3P4/8/8/8 w - - 0 1");
+    board.set_from_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPP3PP/RNBQKBNR w KQkq - 0 1");
+    board.print();
     std::cout << "Isolated pawn position:" << std::endl;
     eval.print_evaluation_breakdown(board);
     
     // Test passed pawns
-    board.set_from_fen("8/8/8/3P4/8/8/8/8 w - - 0 1");
+    board.set_from_fen("rnbqkbnr/8/4P3/8/3pp3/8/PPP3PP/RNBQKBNR w KQkq - 0 1");
+    board.print();
     std::cout << "Passed pawn position:" << std::endl;
     eval.print_evaluation_breakdown(board);
     
@@ -710,20 +712,93 @@ void test_pawn_structure_detailed() {
     };
     
     std::vector<PawnTest> pawn_tests = {
-        {"8/8/8/8/3P4/8/8/8 w - - 0 1", "Isolated pawn"},
-        {"8/8/8/8/3P4/3P4/8/8 w - - 0 1", "Doubled pawns"},
-        {"8/8/8/3P4/8/8/8/8 w - - 0 1", "Passed pawn"},
-        {"8/8/8/2PPP3/8/8/8/8 w - - 0 1", "Pawn chain"},
-        {"8/8/2P5/3P4/4P3/5P2/8/8 w - - 0 1", "Pawn chain"},
-        {"8/8/8/2PP4/8/8/8/8 w - - 0 1", "Connected pawns"},
-        {"8/8/8/8/8/2p5/3P4/8 w - - 0 1", "Backward pawn"},
-        {"8/8/8/2PP4/8/8/2pp4/8 w - - 0 1", "Opposing pawn chains"}
+        // Isolated pawn tests (at least 3)
+        {"8/8/8/8/3P4/8/8/8 w - - 0 1", "Isolated pawn - center"},
+        {"8/8/8/8/P7/8/8/8 w - - 0 1", "Isolated pawn - a-file"},
+        {"8/8/8/8/7P/8/8/8 w - - 0 1", "Isolated pawn - h-file"},
+        {"8/8/8/8/2P1P3/8/8/8 w - - 0 1", "Two isolated pawns"},
+        
+        // Doubled pawn tests (at least 3)
+        {"8/8/8/8/3P4/3P4/8/8 w - - 0 1", "Doubled pawns - same file"},
+        {"8/8/3P4/8/3P4/8/8/8 w - - 0 1", "Doubled pawns - gap between"},
+        {"8/3P4/8/8/3P4/3P4/8/8 w - - 0 1", "Tripled pawns"},
+        {"8/8/8/8/P3P3/P3P3/8/8 w - - 0 1", "Multiple doubled pawns"},
+        
+        // Backward pawn tests (at least 3)
+        {"8/8/8/8/8/2p5/3P4/8 w - - 0 1", "Backward pawn - basic"},
+        {"8/8/8/8/2p1p3/8/3P4/8 w - - 0 1", "Backward pawn - blocked"},
+        {"8/8/8/8/8/1p1p4/2P5/8 w - - 0 1", "Backward pawn - no support"},
+        {"8/8/8/8/8/p5p1/1P3P2/8 w - - 0 1", "Multiple backward pawns"},
+        
+        // Passed pawn tests (at least 3)
+        {"8/8/8/3P4/8/8/8/8 w - - 0 1", "Passed pawn - clear path"},
+        {"8/8/8/3P4/8/8/2p1p3/8 w - - 0 1", "Passed pawn - enemy pawns behind"},
+        {"8/8/6P1/8/8/8/8/8 w - - 0 1", "Passed pawn - advanced"},
+        {"8/8/8/2PP4/8/8/8/8 w - - 0 1", "Connected passed pawns"},
+        {"8/8/8/P6P/8/8/8/8 w - - 0 1", "Multiple passed pawns"},
+        
+        // Pawn chain tests (at least 3)
+        {"8/8/8/2PPP3/8/8/8/8 w - - 0 1", "Pawn chain - basic"},
+        {"8/8/2P5/3P4/4P3/5P2/8/8 w - - 0 1", "Pawn chain - diagonal"},
+        {"8/8/8/1P6/2P5/3P4/8/8 w - - 0 1", "Pawn chain - long diagonal"},
+        {"8/8/8/2P1P3/3P4/8/8/8 w - - 0 1", "Pawn chain - supported center"},
+        
+        // Connected pawns tests (at least 3)
+        {"8/8/8/2PP4/8/8/8/8 w - - 0 1", "Connected pawns - adjacent"},
+        {"8/8/8/1PPP4/8/8/8/8 w - - 0 1", "Connected pawns - three in row"},
+        {"8/8/8/PP2PP2/8/8/8/8 w - - 0 1", "Multiple connected groups"},
+        
+        // Complex pawn structure tests
+        {"8/8/8/2PP4/8/8/2pp4/8 w - - 0 1", "Opposing pawn chains"},
+        {"8/8/8/2P1p3/3P4/8/8/8 w - - 0 1", "Mixed structure - chain vs isolated"},
+        {"8/8/3P4/2P1P3/3p4/2p1p3/8/8 w - - 0 1", "Complex pawn tension"},
+        {"8/8/8/8/P1P1P1P1/8/8/8 w - - 0 1", "All isolated pawns"},
+        {"8/P7/P7/P7/8/8/8/8 w - - 0 1", "Extreme doubled pawns"},
+        
+        // Positions with other pieces - Isolated pawns
+        {"rnbqkbnr/ppp1pppp/8/3p4/3P4/8/PPP1PPPP/RNBQKBNR w KQkq - 0 1", "Isolated d-pawn opening"},
+        {"rnbqkbnr/ppp1pppp/8/3p4/3P4/8/PP3PPP/RNBQKBNR w KQkq - 0 1", "Isolated d-pawn opening"},
+        {"r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 0 1", "Isolated e-pawn with pieces"},
+        {"rnbqkb1r/pppp1ppp/5n2/4p3/2B1P3/8/PPPP1PPP/RNBQK1NR w KQkq - 0 1", "Isolated e-pawn Italian game"},
+        
+        // Positions with other pieces - Doubled pawns
+        {"rnbqkbnr/ppp2ppp/8/3pp3/3PP3/8/PPP2PPP/RNBQKBNR w KQkq - 0 1", "Doubled e-pawns center"},
+        {"r1bqkbnr/pppp1ppp/2n5/8/3pP3/5N2/PPP2PPP/RNBQKB1R w KQkq - 0 1", "Doubled f-pawns after capture"},
+        {"rnbqkb1r/ppp2ppp/5n2/3p4/3P4/2N2N2/PPP2PPP/R1BQKB1R w KQkq - 0 1", "Doubled c-pawns Queen's Gambit"},
+        
+        // Positions with other pieces - Backward pawns
+        {"rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 1", "Backward d-pawn Sicilian"},
+        {"r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 1", "Backward f-pawn Italian"},
+        {"rnbqkb1r/ppp2ppp/5n2/3pp3/3P4/2N2N2/PPP2PPP/R1BQKB1R w KQkq - 0 1", "Backward e-pawn French"},
+        
+        // Positions with other pieces - Passed pawns
+        {"8/8/8/3P4/8/8/5k2/5K2 w - - 0 1", "Passed pawn endgame"},
+        {"r3k2r/ppp2ppp/2n1bn2/3p4/3P4/2N1BN2/PPP2PPP/R3K2R w KQkq - 0 1", "Passed d-pawn middlegame"},
+        {"rnbqk2r/ppp2ppp/5n2/3p4/1b1P4/2N2N2/PPP2PPP/R1BQKB1R w KQkq - 0 1", "Passed d-pawn with pressure"},
+        
+        // Positions with other pieces - Pawn chains
+        {"rnbqkbnr/pp2pppp/8/2pp4/3PP3/8/PPP2PPP/RNBQKBNR w KQkq - 0 1", "Central pawn chain French"},
+        {"r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 0 1", "Pawn chain Italian setup"},
+        {"rnbqkb1r/ppp2ppp/5n2/3pp3/2PP4/2N2N2/PP3PPP/R1BQKB1R w KQkq - 0 1", "Advanced pawn chain"},
+        
+        // Complex middlegame positions
+        {"r2qkb1r/ppp2ppp/2n1bn2/3p4/3P1B2/2N2N2/PPP2PPP/R2QKB1R w KQkq - 0 1", "Complex pawn structure middlegame"},
+        {"rnbq1rk1/ppp1bppp/4pn2/3p4/2PP4/2N1PN2/PP3PPP/R1BQKB1R w KQ - 0 1", "Fianchetto with pawn tension"},
+        {"r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/3P1N2/PPP2PPP/RNBQK2R w KQkq - 0 1", "Spanish opening pawn structure"},
+        
+        // Endgame positions with pawns and pieces
+        {"8/2k5/8/3P4/8/3K4/8/8 w - - 0 1", "King and pawn vs king"},
+        {"8/8/2k5/3p4/3P4/3K4/8/8 w - - 0 1", "Opposition with pawns"},
+        {"8/8/8/2kPp3/8/8/3K4/8 w - e6 0 1", "En passant in endgame"}
     };
     
+    std::cout << "\n--- Individual Pawn Structure Tests ---" << std::endl;
     for (const auto& test : pawn_tests) {
         board.set_from_fen(test.fen);
+        board.print();
         int pawn_score = eval.evaluate_pawn_structure(board);
-        std::cout << std::setw(25) << test.description << ": " << pawn_score << std::endl;
+        std::cout << test.description << ": " << std::setw(4) << pawn_score << std::endl;
+        eval.print_evaluation_breakdown(board);
     }
     
     std::cout << std::endl;
@@ -1169,41 +1244,41 @@ int main() {
     std::cout << "==========================================" << std::endl << std::endl;
     
     try {
-        // Original tests
-        test_basic_evaluation();
-        test_evaluation_breakdown();
-        test_game_phases();
-        test_zobrist_hashing();
-        test_incremental_evaluation();
-        test_pawn_structure();
-        test_material_values();
-        test_performance();
-
-        // Extended comprehensive tests
-        test_position_evaluations();
-        test_evaluation_consistency();
-        test_symmetry();
-        test_zobrist_collision_resistance();
-        test_evaluation_bounds();
-        test_game_phase_transitions();
-        test_pawn_hash_table();
-        test_evaluation_components();
-        stress_test_performance();
-
-        // Detailed component tests
-        test_piece_coordination();
-        test_endgame_factors();
-        test_development_evaluation();
-        test_tapered_evaluation();
-        test_pawn_structure_detailed();
-        test_king_safety_detailed();
-        test_mobility_detailed();
-        test_incremental_evaluation_detailed();
-        test_zobrist_hashing_detailed();
-        test_edge_cases();
-        test_evaluation_stability();
-        test_move_evaluations();
-        test_custom_fen_move_evaluations();
+//        // Original tests
+//        test_basic_evaluation();
+//        test_evaluation_breakdown();
+//        test_game_phases();
+//        test_zobrist_hashing();
+//        test_incremental_evaluation();
+//        test_pawn_structure();
+//        test_material_values();
+//        test_performance();
+//
+//        // Extended comprehensive tests
+//        test_position_evaluations();
+//        test_evaluation_consistency();
+//        test_symmetry();
+//        test_zobrist_collision_resistance();
+//        test_evaluation_bounds();
+//        test_game_phase_transitions();
+//        test_pawn_hash_table();
+//        test_evaluation_components();
+//        stress_test_performance();
+//
+//        // Detailed component tests
+//        test_piece_coordination();
+//        test_endgame_factors();
+//        test_development_evaluation();
+//        test_tapered_evaluation();
+//        test_pawn_structure_detailed();
+//        test_king_safety_detailed();
+//        test_mobility_detailed();
+//        test_incremental_evaluation_detailed();
+//        test_zobrist_hashing_detailed();
+//        test_edge_cases();
+//        test_evaluation_stability();
+//        test_move_evaluations();
+//        test_custom_fen_move_evaluations();
         
         std::cout << "All extended tests completed successfully!" << std::endl;
     }

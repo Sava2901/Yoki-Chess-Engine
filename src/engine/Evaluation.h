@@ -51,12 +51,31 @@ namespace EvalConstants {
     constexpr int KNIGHT_BLOCKING_PAWN_PENALTY = -20;
     constexpr int CENTER_PAWN_PREMATURE_ADVANCE_PENALTY = -15;
     
-    // King safety - enhanced
+    // King safety - comprehensive
     constexpr int KING_SAFETY_BONUS = 15;
     constexpr int OPEN_FILE_NEAR_KING_PENALTY = -25;
     constexpr int SEMI_OPEN_FILE_NEAR_KING_PENALTY = -12;
     constexpr int KING_ATTACK_WEIGHT = 20;
     constexpr int KING_ZONE_ATTACK_BONUS = 8;
+    
+    // Additional king safety factors
+    constexpr int KING_ON_OPEN_FILE_PENALTY = -40;
+    constexpr int KING_EXPOSED_PENALTY = -30;
+    constexpr int MISSING_FIANCHETTO_BISHOP_PENALTY = -20;
+    constexpr int WEAK_SQUARES_NEAR_KING_PENALTY = -15;
+    constexpr int ENEMY_QUEEN_NEAR_KING_PENALTY = -35;
+    constexpr int MULTIPLE_ATTACKERS_PENALTY = -25;
+    constexpr int KING_TROPISM_PENALTY = -5; // Per piece close to king
+    constexpr int PAWN_SHIELD_BONUS = 10;
+    constexpr int FIANCHETTO_BONUS = 15;
+    constexpr int KING_CORNER_SAFETY_BONUS = 20;
+    constexpr int CASTLING_RIGHTS_BONUS = 25;
+    constexpr int KING_ACTIVITY_PENALTY = -10; // In middlegame
+    constexpr int DISCOVERED_CHECK_THREAT_PENALTY = -30;
+    constexpr int PIN_ON_KING_PENALTY = -20;
+    constexpr int FORK_THREAT_ON_KING_PENALTY = -25;
+    constexpr int BACK_RANK_WEAKNESS_PENALTY = -35;
+    constexpr int KING_ESCAPE_SQUARES_BONUS = 5; // Per escape square
     
     // Mobility - refined
     constexpr int KNIGHT_MOBILITY_BONUS = 4;
@@ -158,6 +177,14 @@ public:
     int evaluate_development_for_color(const Board& board, Board::Color color) const;
     int evaluate_king_safety_pawn_penalties(const Board& board, Board::Color color) const;
     int evaluate_development_limiting_pawn_penalties(const Board& board, Board::Color color) const;
+    int evaluate_king_exposure(const Board& board, Board::Color color) const;
+    int evaluate_king_attackers(const Board& board, Board::Color color) const;
+    int evaluate_king_tropism(const Board& board, Board::Color color) const;
+    int evaluate_pawn_shield(const Board& board, Board::Color color) const;
+    int evaluate_castling_safety(const Board& board, Board::Color color) const;
+    int evaluate_back_rank_safety(const Board& board, Board::Color color) const;
+    int evaluate_king_escape_squares(const Board& board, Board::Color color) const;
+    int evaluate_tactical_threats_to_king(const Board& board, Board::Color color) const;
     
     // Tapered evaluation (interpolates between opening and endgame)
     int tapered_eval(int opening_score, int endgame_score, int phase_value) const;
