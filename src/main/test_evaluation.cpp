@@ -804,6 +804,59 @@ void test_pawn_structure_detailed() {
     std::cout << std::endl;
 }
 
+void print_king_safety_breakdown(const Board& board, const Evaluation& eval) {
+    std::cout << "  King Safety Component Breakdown:" << std::endl;
+    
+    // White king safety components
+    int white_exposure = eval.evaluate_king_exposure(board, Board::WHITE);
+    int white_attackers = eval.evaluate_king_attackers(board, Board::WHITE);
+    int white_tropism = eval.evaluate_king_tropism(board, Board::WHITE);
+    int white_shield = eval.evaluate_pawn_shield(board, Board::WHITE);
+    int white_castling = eval.evaluate_castling_safety(board, Board::WHITE);
+    int white_backrank = eval.evaluate_back_rank_safety(board, Board::WHITE);
+    int white_escape = eval.evaluate_king_escape_squares(board, Board::WHITE);
+    int white_threats = eval.evaluate_tactical_threats_to_king(board, Board::WHITE);
+    
+    // Black king safety components
+    int black_exposure = eval.evaluate_king_exposure(board, Board::BLACK);
+    int black_attackers = eval.evaluate_king_attackers(board, Board::BLACK);
+    int black_tropism = eval.evaluate_king_tropism(board, Board::BLACK);
+    int black_shield = eval.evaluate_pawn_shield(board, Board::BLACK);
+    int black_castling = eval.evaluate_castling_safety(board, Board::BLACK);
+    int black_backrank = eval.evaluate_back_rank_safety(board, Board::BLACK);
+    int black_escape = eval.evaluate_king_escape_squares(board, Board::BLACK);
+    int black_threats = eval.evaluate_tactical_threats_to_king(board, Board::BLACK);
+
+    std::cout << "    Black King Components:" << std::endl;
+    std::cout << "      Exposure:      " << std::setw(6) << black_exposure << std::endl;
+    std::cout << "      Attackers:     " << std::setw(6) << black_attackers << std::endl;
+    std::cout << "      Tropism:       " << std::setw(6) << black_tropism << std::endl;
+    std::cout << "      Pawn Shield:   " << std::setw(6) << black_shield << std::endl;
+    std::cout << "      Castling:      " << std::setw(6) << black_castling << std::endl;
+    std::cout << "      Back Rank:     " << std::setw(6) << black_backrank << std::endl;
+    std::cout << "      Escape Squares:" << std::setw(6) << black_escape << std::endl;
+    std::cout << "      Threats:       " << std::setw(6) << black_threats << std::endl;
+
+    std::cout << "    White King Components:" << std::endl;
+    std::cout << "      Exposure:      " << std::setw(6) << white_exposure << std::endl;
+    std::cout << "      Attackers:     " << std::setw(6) << white_attackers << std::endl;
+    std::cout << "      Tropism:       " << std::setw(6) << white_tropism << std::endl;
+    std::cout << "      Pawn Shield:   " << std::setw(6) << white_shield << std::endl;
+    std::cout << "      Castling:      " << std::setw(6) << white_castling << std::endl;
+    std::cout << "      Back Rank:     " << std::setw(6) << white_backrank << std::endl;
+    std::cout << "      Escape Squares:" << std::setw(6) << white_escape << std::endl;
+    std::cout << "      Threats:       " << std::setw(6) << white_threats << std::endl;
+
+    int white_total = white_exposure + white_attackers + white_tropism + white_shield + 
+                     white_castling + white_backrank + white_escape + white_threats;
+    int black_total = black_exposure + black_attackers + black_tropism + black_shield + 
+                     black_castling + black_backrank + black_escape + black_threats;
+    
+    std::cout << "    White Total:   " << std::setw(6) << white_total << std::endl;
+    std::cout << "    Black Total:   " << std::setw(6) << black_total << std::endl;
+    std::cout << "    Net Score:     " << std::setw(6) << (white_total - black_total) << std::endl;
+}
+
 void test_king_safety_detailed() {
     std::cout << "=== Testing Detailed King Safety ===" << std::endl;
     
@@ -815,6 +868,8 @@ void test_king_safety_detailed() {
         std::string description;
     };
     
+    // Test overall king safety evaluation
+    std::cout << "--- Overall King Safety Tests ---" << std::endl;
     std::vector<KingSafetyTest> safety_tests = {
         {"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "Starting position"},
         {"rnbqk2r/pppp1ppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "King on open file"},
@@ -823,11 +878,165 @@ void test_king_safety_detailed() {
         {"8/8/8/8/8/8/4K3/4k3 w - - 0 1", "Exposed kings"},
         {"r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1", "Kings on back rank"}
     };
-    
+
     for (const auto& test : safety_tests) {
         board.set_from_fen(test.fen);
-        int safety_score = eval.evaluate_king_safety(board);
-        std::cout << std::setw(25) << test.description << ": " << safety_score << std::endl;
+        board.print();
+        int king_score = eval.evaluate_king_safety(board);
+        std::cout << test.description << ": " << std::setw(4) << king_score << std::endl;
+        print_king_safety_breakdown(board, eval);
+    }
+    
+    // Test king exposure evaluation
+    std::cout << "\n--- King Exposure Tests ---" << std::endl;
+    std::vector<KingSafetyTest> exposure_tests = {
+        {"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "Normal king shelter"},
+        {"rnbqkb1r/pppppp1p/6p1/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "Fianchetto setup"},
+        {"rnbqk2r/pppppppp/8/8/8/8/PPPPPPPP/RNBQKB1R w KQkq - 0 1", "Missing fianchetto bishop"},
+        {"4k3/8/8/8/8/8/8/4K3 w - - 0 1", "Exposed kings center"},
+        {"7k/8/8/8/8/8/8/K7 w - - 0 1", "Kings in corners"},
+        {"rnbqkbnr/ppp1pppp/8/3p4/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "Slightly exposed king"}
+    };
+
+    for (const auto& test : exposure_tests) {
+        board.set_from_fen(test.fen);
+        board.print();
+        int king_score = eval.evaluate_king_safety(board);
+        std::cout << test.description << ": " << std::setw(4) << king_score << std::endl;
+        print_king_safety_breakdown(board, eval);
+    }
+    
+    // Test king attackers evaluation
+    std::cout << "\n--- King Attackers Tests ---" << std::endl;
+    std::vector<KingSafetyTest> attackers_tests = {
+        {"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "No attackers"},
+        {"rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 1", "Center pawns"},
+        {"r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/3P1N2/PPP2PPP/RNBQK2R w KQkq - 0 1", "Developed pieces"},
+        {"r2qkb1r/ppp2ppp/2np1n2/4p1B1/2B1P3/3P1N2/PPP2PPP/RN1QK2R w KQkq - 0 1", "Multiple attackers"},
+        {"r1bq1rk1/pppp1ppp/2n2n2/2b1p3/2B1P3/3P1N2/PPP2PPP/RNBQ1RK1 w - - 0 1", "Castled positions"},
+        {"2rq1rk1/ppp2ppp/2np1n2/2b1p3/2B1P3/3P1N2/PPP2PPP/RNBQ1RK1 w - - 0 1", "Queen near king"}
+    };
+
+    for (const auto& test : attackers_tests) {
+        board.set_from_fen(test.fen);
+        board.print();
+        int king_score = eval.evaluate_king_safety(board);
+        std::cout << test.description << ": " << std::setw(4) << king_score << std::endl;
+        print_king_safety_breakdown(board, eval);
+    }
+    
+    // Test king tropism evaluation
+    std::cout << "\n--- King Tropism Tests ---" << std::endl;
+    std::vector<KingSafetyTest> tropism_tests = {
+        {"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "Starting position"},
+        {"r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/3P1N2/PPP2PPP/RNBQK2R w KQkq - 0 1", "Pieces near kings"},
+        {"8/8/8/3nk3/8/3K4/8/8 w - - 0 1", "Knight near king"},
+        {"8/8/8/2bk4/8/3K4/8/8 w - - 0 1", "Bishop near king"},
+        {"8/8/8/3k4/3r4/3K4/8/8 w - - 0 1", "Rook near king"},
+        {"8/8/8/2qk4/8/3K4/8/8 w - - 0 1", "Queen near king"}
+    };
+
+    for (const auto& test : tropism_tests) {
+        board.set_from_fen(test.fen);
+        board.print();
+        int king_score = eval.evaluate_king_safety(board);
+        std::cout << test.description << ": " << std::setw(4) << king_score << std::endl;
+        print_king_safety_breakdown(board, eval);
+    }
+    
+    // Test pawn shield evaluation
+    std::cout << "\n--- Pawn Shield Tests ---" << std::endl;
+    std::vector<KingSafetyTest> shield_tests = {
+        {"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "Full pawn shield"},
+        {"rnbqkbnr/ppp1pppp/8/3p4/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "Broken black shield"},
+        {"rnbqkbnr/pppppppp/8/8/8/8/PPP1PPPP/RNBQKBNR w KQkq - 0 1", "Broken white shield"},
+        {"rnbq1rk1/ppp1ppbp/3p1np1/8/8/3P1NP1/PPP1PPBP/RNBQ1RK1 w - - 0 1", "Castled with shield"},
+        {"rnbq1rk1/pp2ppbp/3p1np1/2p5/8/3P1NP1/PPP1PPBP/RNBQ1RK1 w - - 0 1", "Weakened castled shield"},
+        {"8/8/8/8/8/8/4K3/8 w - - 0 1", "No pawn shield"}
+    };
+
+    for (const auto& test : shield_tests) {
+        board.set_from_fen(test.fen);
+        board.print();
+        int king_score = eval.evaluate_king_safety(board);
+        std::cout << test.description << ": " << std::setw(4) << king_score << std::endl;
+        print_king_safety_breakdown(board, eval);
+    }
+    
+    // Test castling safety evaluation
+    std::cout << "\n--- Castling Safety Tests ---" << std::endl;
+    std::vector<KingSafetyTest> castling_tests = {
+        {"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "All castling rights"},
+        {"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w Kq - 0 1", "Partial castling rights"},
+        {"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w - - 0 1", "No castling rights"},
+        {"rnbq1rk1/pppppppp/8/8/8/8/PPPPPPPP/RNBQKB1R w KQ - 0 1", "Black castled"},
+        {"rnbqkb1r/pppppppp/8/8/8/8/PPPPPPPP/RNBQ1RK1 w kq - 0 1", "White castled"},
+        {"rnbq1rk1/pppppppp/8/8/8/8/PPPPPPPP/RNBQ1RK1 w - - 0 1", "Both castled"}
+    };
+
+    for (const auto& test : castling_tests) {
+        board.set_from_fen(test.fen);
+        board.print();
+        int king_score = eval.evaluate_king_safety(board);
+        std::cout << test.description << ": " << std::setw(4) << king_score << std::endl;
+        print_king_safety_breakdown(board, eval);
+    }
+    
+    // Test back rank safety evaluation
+    std::cout << "\n--- Back Rank Safety Tests ---" << std::endl;
+    std::vector<KingSafetyTest> backrank_tests = {
+        {"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "Safe back rank"},
+        {"r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1", "Rooks on back rank"},
+        {"r3k3/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQ - 0 1", "Black back rank weak"},
+        {"r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K3 w Qkq - 0 1", "White back rank weak"},
+        {"4k3/pppppppp/8/8/8/8/PPPPPPPP/4K3 w - - 0 1", "Both back ranks weak"},
+        {"rnbq1rk1/ppp1ppbp/3p1np1/8/8/3P1NP1/PPP1PPBP/RNBQ1RK1 w - - 0 1", "Castled safety"}
+    };
+
+    for (const auto& test : backrank_tests) {
+        board.set_from_fen(test.fen);
+        board.print();
+        int king_score = eval.evaluate_king_safety(board);
+        std::cout << test.description << ": " << std::setw(4) << king_score << std::endl;
+        print_king_safety_breakdown(board, eval);
+    }
+    
+    // Test king escape squares evaluation
+    std::cout << "\n--- King Escape Squares Tests ---" << std::endl;
+    std::vector<KingSafetyTest> escape_tests = {
+        {"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "Limited escape squares"},
+        {"8/8/8/8/8/8/4K3/8 w - - 0 1", "Many escape squares"},
+        {"rnbq1rk1/ppp1ppbp/3p1np1/8/8/3P1NP1/PPP1PPBP/RNBQ1RK1 w - - 0 1", "Castled king escape"},
+        {"8/8/8/8/8/8/PPP5/RK6 w - - 0 1", "Trapped king"},
+        {"8/8/8/8/8/8/5PPP/6KR w - - 0 1", "Trapped king other side"},
+        {"4k3/4p3/4P3/8/8/8/8/4K3 w - - 0 1", "Blocked escape squares"}
+    };
+
+    for (const auto& test : escape_tests) {
+        board.set_from_fen(test.fen);
+        board.print();
+        int king_score = eval.evaluate_king_safety(board);
+        std::cout << test.description << ": " << std::setw(4) << king_score << std::endl;
+        print_king_safety_breakdown(board, eval);
+    }
+    
+    // Test tactical threats to king evaluation
+    std::cout << "\n--- Tactical Threats Tests ---" << std::endl;
+    std::vector<KingSafetyTest> threats_tests = {
+        {"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", "No immediate threats"},
+        {"rnbqkb1r/pppp1ppp/5n2/4p3/2B1P3/8/PPPP1PPP/RNBQK1NR w KQkq - 0 1", "Pin on f7"},
+        {"r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/3P1N2/PPP2PPP/RNBQK2R w KQkq - 0 1", "Potential discoveries"},
+        {"r1bq1rk1/ppp2ppp/2np1n2/2b1p3/2B1P3/3P1N2/PPP2PPP/RNBQ1RK1 w - - 0 1", "Complex position"},
+        {"8/8/8/8/8/2B1k3/8/4K3 w - - 0 1", "Simple pin threat"},
+        {"8/8/8/8/8/8/4k3/R3K2R w KQ - 0 1", "Back rank threats"}
+    };
+
+    for (const auto& test : threats_tests) {
+        board.set_from_fen(test.fen);
+        board.print();
+        int king_score = eval.evaluate_king_safety(board);
+        std::cout << test.description << ": " << std::setw(4) << king_score << std::endl;
+        print_king_safety_breakdown(board, eval);
     }
     
     std::cout << std::endl;
@@ -1271,7 +1480,7 @@ int main() {
 //        test_development_evaluation();
 //        test_tapered_evaluation();
 //        test_pawn_structure_detailed();
-//        test_king_safety_detailed();
+        test_king_safety_detailed();
 //        test_mobility_detailed();
 //        test_incremental_evaluation_detailed();
 //        test_zobrist_hashing_detailed();
