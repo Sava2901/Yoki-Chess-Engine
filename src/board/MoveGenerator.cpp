@@ -3,6 +3,10 @@
 #include <iostream>
 #include <immintrin.h>  // For PEXT if available
 
+// TODO: Fix optimization similar to this one all around
+// TODO: Replace push_back with emplace_back in possible cases
+// TODO: Use std::array instead of std::vector where is possible
+// TODO: Identify why the prefetching is not working as expected (less computations per second)
 // Cache optimization macros
 #ifdef _MSC_VER
     #define PREFETCH_READ(addr) _mm_prefetch((const char*)(addr), _MM_HINT_T0)
@@ -70,18 +74,18 @@ std::vector<Move> MoveGenerator::generate_all_moves(const Board& board) {
     Bitboard all_pieces_bb = board.get_all_pieces();
     
     // Prefetch the actual bitboard data
-    PREFETCH_READ(&queen_bb);
-    PREFETCH_READ(&rook_bb);
-    PREFETCH_READ(&bishop_bb);
-    PREFETCH_READ(&knight_bb);
-    PREFETCH_READ(&pawn_bb);
-    PREFETCH_READ(&color_bb);
-    PREFETCH_READ(&opponent_bb);
-    PREFETCH_READ(&all_pieces_bb);
+    // PREFETCH_READ(&queen_bb);
+    // PREFETCH_READ(&rook_bb);
+    // PREFETCH_READ(&bishop_bb);
+    // PREFETCH_READ(&knight_bb);
+    // PREFETCH_READ(&pawn_bb);
+    // PREFETCH_READ(&color_bb);
+    // PREFETCH_READ(&opponent_bb);
+    // PREFETCH_READ(&all_pieces_bb);
     
     // Prefetch magic bitboard attack tables for sliding pieces
-    PREFETCH_RANGE(BitboardUtils::get_rook_attacks_table(0), 64 * sizeof(Bitboard*));
-    PREFETCH_RANGE(BitboardUtils::get_bishop_attacks_table(0), 64 * sizeof(Bitboard*));
+    // PREFETCH_RANGE(BitboardUtils::get_rook_attacks_table(0), 64 * sizeof(Bitboard*));
+    // PREFETCH_RANGE(BitboardUtils::get_bishop_attacks_table(0), 64 * sizeof(Bitboard*));
 
     // Generate moves in order of likely importance for better cache locality
     generate_queen_moves(board, moves);   // Most powerful piece first
@@ -109,8 +113,8 @@ std::vector<Move> MoveGenerator::generate_legal_moves(Board& board) {
     int king_square = board.get_king_position(color);
     if (king_square != -1) {
         // Prefetch attack tables around king position for pin detection
-        PREFETCH_READ(BitboardUtils::get_rook_attacks_table(king_square));
-        PREFETCH_READ(BitboardUtils::get_bishop_attacks_table(king_square));
+        // PREFETCH_READ(BitboardUtils::get_rook_attacks_table(king_square));
+        // PREFETCH_READ(BitboardUtils::get_bishop_attacks_table(king_square));
     }
     
     Bitboard pinned_pieces = get_pinned_pieces(board, color);
@@ -119,7 +123,7 @@ std::vector<Move> MoveGenerator::generate_legal_moves(Board& board) {
     
     // Prefetch move data for faster iteration
     if (!pseudo_legal.empty()) {
-        PREFETCH_RANGE(pseudo_legal.data(), pseudo_legal.size() * sizeof(Move));
+        // PREFETCH_RANGE(pseudo_legal.data(), pseudo_legal.size() * sizeof(Move));
     }
 
     for (const Move& move : pseudo_legal) {
@@ -281,7 +285,7 @@ void MoveGenerator::generate_bishop_moves(const Board& board, std::vector<Move>&
     Bitboard temp_bishops = bishops;
     while (temp_bishops) {
         int square = BitboardUtils::get_lsb_index(temp_bishops);
-        PREFETCH_READ(BitboardUtils::get_bishop_attacks_table(square));
+        // PREFETCH_READ(BitboardUtils::get_bishop_attacks_table(square));
         temp_bishops &= temp_bishops - 1; // Clear LSB without modifying original
     }
 
@@ -291,7 +295,7 @@ void MoveGenerator::generate_bishop_moves(const Board& board, std::vector<Move>&
         // Prefetch next bishop's attack table if available
         if (bishops) {
             int next_square = BitboardUtils::get_lsb_index(bishops);
-            PREFETCH_READ(BitboardUtils::get_bishop_attacks_table(next_square));
+            // PREFETCH_READ(BitboardUtils::get_bishop_attacks_table(next_square));
         }
         
         Bitboard bishop_attacks = BitboardUtils::bishop_attacks(from_square, all_pieces);
@@ -320,7 +324,7 @@ void MoveGenerator::generate_rook_moves(const Board& board, std::vector<Move>& m
     Bitboard temp_rooks = rooks;
     while (temp_rooks) {
         int square = BitboardUtils::get_lsb_index(temp_rooks);
-        PREFETCH_READ(BitboardUtils::get_rook_attacks_table(square));
+        // PREFETCH_READ(BitboardUtils::get_rook_attacks_table(square));
         temp_rooks &= temp_rooks - 1; // Clear LSB without modifying original
     }
 
@@ -330,7 +334,7 @@ void MoveGenerator::generate_rook_moves(const Board& board, std::vector<Move>& m
         // Prefetch next rook's attack table if available
         if (rooks) {
             int next_square = BitboardUtils::get_lsb_index(rooks);
-            PREFETCH_READ(BitboardUtils::get_rook_attacks_table(next_square));
+            // PREFETCH_READ(BitboardUtils::get_rook_attacks_table(next_square));
         }
         
         Bitboard rook_attacks = BitboardUtils::rook_attacks(from_square, all_pieces);
@@ -359,8 +363,8 @@ void MoveGenerator::generate_queen_moves(const Board& board, std::vector<Move>& 
     Bitboard temp_queens = queens;
     while (temp_queens) {
         int square = BitboardUtils::get_lsb_index(temp_queens);
-        PREFETCH_READ(BitboardUtils::get_rook_attacks_table(square));
-        PREFETCH_READ(BitboardUtils::get_bishop_attacks_table(square));
+        // PREFETCH_READ(BitboardUtils::get_rook_attacks_table(square));
+        // PREFETCH_READ(BitboardUtils::get_bishop_attacks_table(square));
         temp_queens &= temp_queens - 1; // Clear LSB without modifying original
     }
 
@@ -370,8 +374,8 @@ void MoveGenerator::generate_queen_moves(const Board& board, std::vector<Move>& 
         // Prefetch next queen's attack tables if available
         if (queens) {
             int next_square = BitboardUtils::get_lsb_index(queens);
-            PREFETCH_READ(BitboardUtils::get_rook_attacks_table(next_square));
-            PREFETCH_READ(BitboardUtils::get_bishop_attacks_table(next_square));
+            // PREFETCH_READ(BitboardUtils::get_rook_attacks_table(next_square));
+            // PREFETCH_READ(BitboardUtils::get_bishop_attacks_table(next_square));
         }
         
         Bitboard queen_attacks = BitboardUtils::queen_attacks(from_square, all_pieces);
@@ -532,11 +536,11 @@ Bitboard MoveGenerator::get_attacked_squares(const Board& board, Board::Color co
     Bitboard rooks_prefetch = board.get_piece_bitboard(Board::ROOK, color);
     Bitboard queens_prefetch = board.get_piece_bitboard(Board::QUEEN, color);
     
-    PREFETCH_READ(&pawns_prefetch);
-    PREFETCH_READ(&knights_prefetch);
-    PREFETCH_READ(&bishops_prefetch);
-    PREFETCH_READ(&rooks_prefetch);
-    PREFETCH_READ(&queens_prefetch);
+    // PREFETCH_READ(&pawns_prefetch);
+    // PREFETCH_READ(&knights_prefetch);
+    // PREFETCH_READ(&bishops_prefetch);
+    // PREFETCH_READ(&rooks_prefetch);
+    // PREFETCH_READ(&queens_prefetch);
 
     // Pawn attacks
     Bitboard pawns = board.get_piece_bitboard(Board::PAWN, color);
@@ -557,7 +561,7 @@ Bitboard MoveGenerator::get_attacked_squares(const Board& board, Board::Color co
     while (bishops) {
         int square = BitboardUtils::pop_lsb(bishops);
         // Prefetch bishop attack table for this square
-        PREFETCH_READ(BitboardUtils::get_bishop_attacks_table(square));
+        // PREFETCH_READ(BitboardUtils::get_bishop_attacks_table(square));
         attacked |= BitboardUtils::bishop_attacks(square, all_pieces);
     }
 
@@ -566,7 +570,7 @@ Bitboard MoveGenerator::get_attacked_squares(const Board& board, Board::Color co
     while (rooks) {
         int square = BitboardUtils::pop_lsb(rooks);
         // Prefetch rook attack table for this square
-        PREFETCH_READ(BitboardUtils::get_rook_attacks_table(square));
+        // PREFETCH_READ(BitboardUtils::get_rook_attacks_table(square));
         attacked |= BitboardUtils::rook_attacks(square, all_pieces);
     }
 
@@ -575,8 +579,8 @@ Bitboard MoveGenerator::get_attacked_squares(const Board& board, Board::Color co
     while (queens) {
         int square = BitboardUtils::pop_lsb(queens);
         // Prefetch both rook and bishop attack tables for queen
-        PREFETCH_READ(BitboardUtils::get_rook_attacks_table(square));
-        PREFETCH_READ(BitboardUtils::get_bishop_attacks_table(square));
+        // PREFETCH_READ(BitboardUtils::get_rook_attacks_table(square));
+        // PREFETCH_READ(BitboardUtils::get_bishop_attacks_table(square));
         attacked |= BitboardUtils::queen_attacks(square, all_pieces);
     }
 

@@ -51,33 +51,23 @@ namespace EvalConstants {
     constexpr int KNIGHT_BLOCKING_PAWN_PENALTY = -20;
     constexpr int CENTER_PAWN_PREMATURE_ADVANCE_PENALTY = -15;
     
-    // King safety - comprehensive (optimized values)
-    constexpr int KING_SAFETY_BONUS = 12;
+    // King safety
     constexpr int OPEN_FILE_NEAR_KING_PENALTY = -20;
     constexpr int SEMI_OPEN_FILE_NEAR_KING_PENALTY = -10;
-    constexpr int KING_ATTACK_WEIGHT = 15;
-    constexpr int KING_ZONE_ATTACK_BONUS = 6;
-    
-    // Additional king safety factors (refined)
+
+    // Additional king safety factors
     constexpr int KING_ON_OPEN_FILE_PENALTY = -30;
     constexpr int KING_EXPOSED_PENALTY = -25;
-    constexpr int MISSING_FIANCHETTO_BISHOP_PENALTY = -15;
-    constexpr int WEAK_SQUARES_NEAR_KING_PENALTY = -12;
-    constexpr int ENEMY_QUEEN_NEAR_KING_PENALTY = -28;
-    constexpr int MULTIPLE_ATTACKERS_PENALTY = -18;
-    constexpr int KING_TROPISM_PENALTY = -4; // Per piece close to king
+    constexpr int KING_PAWN_SHIELD = 15;
     constexpr int PAWN_SHIELD_BONUS = 8;
     constexpr int FIANCHETTO_BONUS = 12;
-    constexpr int KING_CORNER_SAFETY_BONUS = 15;
-    constexpr int CASTLING_RIGHTS_BONUS = 20;
     constexpr int KING_ACTIVITY_PENALTY = -8; // In middlegame
-    constexpr int DISCOVERED_CHECK_THREAT_PENALTY = -25;
     constexpr int PIN_ON_KING_PENALTY = -15;
-    constexpr int FORK_THREAT_ON_KING_PENALTY = -20;
     constexpr int BACK_RANK_WEAKNESS_PENALTY = -30;
     constexpr int KING_ESCAPE_SQUARES_BONUS = 4; // Per escape square
+    constexpr int KING_ACTIVITY_BONUS = 6; // For king centralization in endgame
     
-    // Mobility - refined
+    // Mobility
     constexpr int KNIGHT_MOBILITY_BONUS = 4;
     constexpr int BISHOP_MOBILITY_BONUS = 3;
     constexpr int ROOK_MOBILITY_BONUS = 2;
@@ -99,8 +89,7 @@ namespace EvalConstants {
     constexpr int ROOK_COORDINATION_BONUS = 12;
     constexpr int QUEEN_ROOK_BATTERY_BONUS = 15;
     
-    // Endgame specific
-    constexpr int KING_ACTIVITY_BONUS = 5;
+    // Endgame factors
     constexpr int OPPOSITION_BONUS = 20;
     constexpr int CENTRALIZATION_BONUS = 10;
     constexpr int KING_NEAR_ENEMY_PAWNS_BONUS = 6;
@@ -175,16 +164,24 @@ public:
     int evaluate_endgame_factors(const Board& board) const;
     int evaluate_development(const Board& board) const;
     int evaluate_development_for_color(const Board& board, Board::Color color) const;
-    int evaluate_king_safety_pawn_penalties(const Board& board, Board::Color color) const;
     int evaluate_development_limiting_pawn_penalties(const Board& board, Board::Color color) const;
-    int evaluate_king_exposure(const Board& board, Board::Color color) const;
-    int evaluate_king_attackers(const Board& board, Board::Color color) const;
-    int evaluate_king_tropism(const Board& board, Board::Color color) const;
+    
+    // I. Structural Safety (Static Factors)
     int evaluate_pawn_shield(const Board& board, Board::Color color) const;
-    int evaluate_castling_safety(const Board& board, Board::Color color) const;
-    int evaluate_back_rank_safety(const Board& board, Board::Color color) const;
-    int evaluate_king_escape_squares(const Board& board, Board::Color color) const;
+    int evaluate_open_files_near_king(const Board& board, Board::Color color) const;
+    int evaluate_king_position_safety(const Board& board, Board::Color color) const;
+    int evaluate_pawn_storms(const Board& board, Board::Color color) const;
+    int evaluate_piece_cover(const Board& board, Board::Color color) const;
+    
+    // II. Threat Evaluation (Dynamic Factors)
+    int evaluate_attacking_pieces_nearby(const Board& board, Board::Color color) const;
+    int evaluate_king_mobility_and_escape(const Board& board, Board::Color color) const;
     int evaluate_tactical_threats_to_king(const Board& board, Board::Color color) const;
+    int evaluate_attack_maps_pressure_zones(const Board& board, Board::Color color) const;
+    
+    // III. Game Phase Adjustments
+    
+    // IV. Dynamic Considerations
     
     // Tapered evaluation (interpolates between opening and endgame)
     int tapered_eval(int opening_score, int endgame_score, int phase_value) const;
@@ -474,6 +471,9 @@ private:
     static int distance_between_squares(int sq1, int sq2);
     static bool is_in_king_zone(int square, int king_square);
     
+    // Helper functions for comprehensive king safety evaluation
+    int evaluate_pins(const Board& board, Board::Color color) const;
+
     // Initialization functions
     void init_passed_pawn_masks();
     void init_pawn_masks();

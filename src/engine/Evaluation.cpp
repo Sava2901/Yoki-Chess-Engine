@@ -93,6 +93,7 @@ int Evaluation::evaluate(const Board& board) {
     
     // Positional evaluation (piece-square tables)
     int positional_score = evaluate_piece_square_tables(board);
+    // TODO: Check if there is a need for improvements regarding weak color complex, weak pawns
     
     // Pawn structure evaluation
     int pawn_score = evaluate_pawn_structure(board);
@@ -576,36 +577,25 @@ int Evaluation::evaluate_pawn_structure_for_color(const Board& board, Board::Col
         int rank = square >> 3;
         int file = square & 7;
 
-//        std::cout << color << std::endl;
-        // Check for isolated pawns - reduced penalty in opening
         if (is_isolated_pawn(board, square, color)) {
             score += EvalConstants::ISOLATED_PAWN_PENALTY;
-//            std::cout << "Isolated pawn " << score << " at: " << rank << " " << file << std::endl;
         }
         
-        // Check for doubled pawns
         if (is_doubled_pawn(board, square, color)) {
             score += EvalConstants::DOUBLED_PAWN_PENALTY;
-//            std::cout << "Doubled pawn " << score << " at: " << rank << " " << file << std::endl;
         }
         
-        // Check for backward pawns
         if (is_backward_pawn(board, square, color)) {
             score += EvalConstants::BACKWARD_PAWN_PENALTY;
-//            std::cout << "Backward pawn " << score << " at: " << rank << " " << file << std::endl;
         }
 
-        // Check for passed pawns
          if (is_passed_pawn(board, square, color)) {
              score += EvalConstants::PASSED_PAWN_BONUS;
              score += get_passed_pawn_rank_bonus(square, color);
-//             std::cout << "Passed pawn " << score << " at: " << rank << " " << file << std::endl;
          }
         
-        // Check for pawn chains
         if (is_pawn_chain(board, square, color)) {
             score += EvalConstants::PAWN_CHAIN_BONUS;
-//            std::cout << "Pawn chain " << score << " at: " << rank << " " << file << std::endl;
         }
 
         // Connected pawns (left/right on same rank)
@@ -615,7 +605,6 @@ int Evaluation::evaluate_pawn_structure_for_color(const Board& board, Board::Col
             int adjacent_square = (rank << 3) | adjacent_file; // rank * 8 + adjacent_file
             if (pawns & (1ULL << adjacent_square)) {
                 score += EvalConstants::CONNECTED_PAWNS_BONUS;
-//                std::cout << "Connected pawn " << score << " at: " << rank << " " << file << std::endl;
                 break;
             }
         }
@@ -644,32 +633,22 @@ int Evaluation::evaluate_king_safety_for_color(const Board& board, Board::Color 
     int expected_rank = (color == Board::WHITE) ? 0 : 7;
     bool is_castled = (king_rank == expected_rank && (king_file == 2 || king_file == 6));
     
-    // Basic file safety around king - optimized loop
-    int start_file = max_int(0, king_file - 1);
-    int end_file = min_int(7, king_file + 1);
-    
-    for (int check_file = start_file; check_file <= end_file; ++check_file) {
-        if (is_file_open(board, check_file)) {
-            score += EvalConstants::OPEN_FILE_NEAR_KING_PENALTY;
-            // Extra penalty if king is directly on open file
-            if (check_file == king_file) {
-                score += EvalConstants::KING_ON_OPEN_FILE_PENALTY;
-            }
-        } else if (is_file_semi_open(board, check_file, color)) {
-            score += EvalConstants::SEMI_OPEN_FILE_NEAR_KING_PENALTY;
-        }
-    }
-
-    // Comprehensive king safety evaluation - call order optimized for early returns
+    // I. Structural Safety (Static Factors)
     score += evaluate_pawn_shield(board, color);
-    score += evaluate_king_exposure(board, color);
-    score += evaluate_castling_safety(board, color);
-    score += evaluate_king_attackers(board, color);
-    score += evaluate_king_tropism(board, color);
-    score += evaluate_back_rank_safety(board, color);
-    score += evaluate_king_escape_squares(board, color);
-    score += evaluate_tactical_threats_to_king(board, color);
-    score += evaluate_king_safety_pawn_penalties(board, color);
+    score += evaluate_open_files_near_king(board, color);
+    score += evaluate_king_position_safety(board, color);
+    score += evaluate_pawn_storms(board, color);
+    score += evaluate_piece_cover(board, color);
+    
+    // II. Threat Evaluation (Dynamic Factors)
+    score += evaluate_attacking_pieces_nearby(board, color);
+    score += evaluate_king_mobility_and_escape(board, color);
+    // score += evaluate_tactical_threats_to_king(board, color); TODO: Check Fix Implement
+    score += evaluate_attack_maps_pressure_zones(board, color);
+    
+    // III. Game Phase Adjustments
+    
+    // IV. Dynamic Considerations
 
     // King activity penalty in middlegame - refined logic
     if (phase == MIDDLEGAME && !is_castled) {
@@ -680,235 +659,13 @@ int Evaluation::evaluate_king_safety_for_color(const Board& board, Board::Color 
     return score;
 }
 
-// Evaluate pawn moves that damage king safety
-int Evaluation::evaluate_king_safety_pawn_penalties(const Board& board, Board::Color color) const {
-    int score = 0;
-    int king_pos = board.get_king_position(color);
-    int king_file = king_pos & 7;
-    int king_rank = king_pos >> 3;
-    
-    Bitboard pawns = board.get_piece_bitboard(Board::PAWN, color);
-    
-    // Check for weakened king shelter (missing or advanced pawns in front of king)
-    for (int file_offset = -1; file_offset <= 1; ++file_offset) {
-        int check_file = king_file + file_offset;
-        if (static_cast<unsigned>(check_file) > 7) continue;
-        
-        bool has_shelter_pawn = false;
-        int shelter_rank = (color == Board::WHITE) ? king_rank + 1 : king_rank - 1;
-        
-        // Check if there's a pawn providing shelter
-        if (shelter_rank >= 0 && shelter_rank < 8) {
-            int shelter_square = (shelter_rank << 3) | check_file;
-            if (pawns & (1ULL << shelter_square)) {
-                has_shelter_pawn = true;
-            }
-        }
-        
-        // Penalty for missing king shelter
-        if (!has_shelter_pawn) {
-            score += EvalConstants::WEAKENED_KING_SHELTER_PENALTY;
-        }
-        
-        // Check for advanced pawns that weaken king safety
-        int advanced_rank = (color == Board::WHITE) ? king_rank + 2 : king_rank - 2;
-        if (advanced_rank >= 0 && advanced_rank < 8) {
-            int advanced_square = (advanced_rank << 3) | check_file;
-            if (pawns & (1ULL << advanced_square)) {
-                score += EvalConstants::PAWN_STORM_AGAINST_KING_PENALTY;
-            }
-        }
-    }
-    
-    return score;
-}
+// =============================================================================
+// NEW KING SAFETY EVALUATION FUNCTIONS
+// =============================================================================
 
-// Evaluate king exposure (weak squares, missing pieces) - optimized
-int Evaluation::evaluate_king_exposure(const Board& board, Board::Color color) const {
-    int score = 0;
-    int king_pos = board.get_king_position(color);
-    int king_file = king_pos & 7;
-    int king_rank = king_pos >> 3;
-    int expected_rank = (color == Board::WHITE) ? 0 : 7;
-    GamePhase phase = get_game_phase(board);
-    
-    // Check for fianchetto bishop protection - optimized with bitboard masks
-    Bitboard bishops = board.get_piece_bitboard(Board::BISHOP, color);
-    bool has_fianchetto_protection = false;
-    
-    if (color == Board::WHITE) {
-        // White fianchetto squares: b1(1), g1(6)
-        Bitboard white_fianchetto_mask = (1ULL << 1) | (1ULL << 6);
-        if (bishops & white_fianchetto_mask) {
-            // Check if fianchetto bishop is protecting king area
-            if ((king_file >= 0 && king_file <= 3 && (bishops & (1ULL << 1))) ||
-                (king_file >= 4 && king_file <= 7 && (bishops & (1ULL << 6)))) {
-                has_fianchetto_protection = true;
-                score += EvalConstants::FIANCHETTO_BONUS;
-            }
-        }
-    } else {
-        // Black fianchetto squares: b8(57), g8(62)
-        Bitboard black_fianchetto_mask = (1ULL << 57) | (1ULL << 62);
-        if (bishops & black_fianchetto_mask) {
-            // Check if fianchetto bishop is protecting king area
-            if ((king_file >= 0 && king_file <= 3 && (bishops & (1ULL << 57))) ||
-                (king_file >= 4 && king_file <= 7 && (bishops & (1ULL << 62)))) {
-                has_fianchetto_protection = true;
-                score += EvalConstants::FIANCHETTO_BONUS;
-            }
-        }
-    }
-    
-    // Penalty for missing fianchetto bishop when king is castled on fianchetto side
-    bool is_fianchetto_castled = (king_rank == expected_rank && (king_file == 1 || king_file == 6));
-    if (is_fianchetto_castled && !has_fianchetto_protection) {
-        score += EvalConstants::MISSING_FIANCHETTO_BISHOP_PENALTY;
-    }
-    
-    // King corner safety bonus - refined conditions
-    bool is_in_corner = (king_rank == expected_rank && (king_file <= 2 || king_file >= 5));
-    if (is_in_corner) {
-        score += EvalConstants::KING_CORNER_SAFETY_BONUS;
-        // Additional bonus if king is well-castled
-        if (king_file == 2 || king_file == 6) {
-            score += EvalConstants::KING_CORNER_SAFETY_BONUS / 2;
-        }
-    }
-    
-    // Check for exposed king - more nuanced evaluation
-    if (phase == MIDDLEGAME || phase == OPENING) {
-        if (king_rank != expected_rank) {
-            // Penalty increases with distance from back rank and game phase
-            int exposure_penalty = EvalConstants::KING_EXPOSED_PENALTY;
-            int distance_penalty = abs_int(king_rank - expected_rank);
-            score += exposure_penalty + (distance_penalty * 5);
-        }
-        
-        // Additional penalty for king in center files during opening/middlegame
-        if ((phase == OPENING || phase == MIDDLEGAME) && king_file >= 3 && king_file <= 4) {
-            score += EvalConstants::KING_EXPOSED_PENALTY / 2;
-        }
-    }
-    
-    return score;
-}
-
-// Evaluate attackers targeting the king - optimized
-int Evaluation::evaluate_king_attackers(const Board& board, Board::Color color) const {
-    int score = 0;
-    Board::Color enemy_color = (color == Board::WHITE) ? Board::BLACK : Board::WHITE;
-    int king_pos = board.get_king_position(color);
-    int king_file = king_pos & 7;
-    int king_rank = king_pos >> 3;
-    
-    // Count attackers in king zone - optimized
-    int attackers = count_attackers_to_king_zone(board, enemy_color, color);
-    
-    // Progressive penalty for multiple attackers
-    if (attackers > 0) {
-        score -= attackers * EvalConstants::KING_ZONE_ATTACK_BONUS;
-        
-        // Exponential penalty for multiple attackers
-        if (attackers >= 2) {
-            score += EvalConstants::MULTIPLE_ATTACKERS_PENALTY;
-            if (attackers >= 4) {
-                score += EvalConstants::MULTIPLE_ATTACKERS_PENALTY; // Double penalty for 4+ attackers
-            }
-        }
-    }
-    
-    // Enemy queen proximity - more detailed evaluation
-    Bitboard enemy_queen = board.get_piece_bitboard(Board::QUEEN, enemy_color);
-    if (enemy_queen) {
-        int queen_square = get_lsb(enemy_queen);
-        int distance = distance_between_squares(king_pos, queen_square);
-        
-        if (distance <= 4) {
-            // Penalty increases as queen gets closer
-            int proximity_penalty = EvalConstants::ENEMY_QUEEN_NEAR_KING_PENALTY * (5 - distance) / 4;
-            score += proximity_penalty;
-            
-            // Extra penalty if queen is on same rank/file as king
-            int queen_file = queen_square & 7;
-            int queen_rank = queen_square >> 3;
-            if (queen_file == king_file || queen_rank == king_rank) {
-                score += EvalConstants::ENEMY_QUEEN_NEAR_KING_PENALTY / 2;
-            }
-        }
-    }
-    
-    // Check for enemy rooks on same file/rank as king
-    Bitboard enemy_rooks = board.get_piece_bitboard(Board::ROOK, enemy_color);
-    uint64_t rook_bits = enemy_rooks;
-    while (rook_bits) {
-        int rook_square = get_lsb(rook_bits);
-        rook_bits &= rook_bits - 1;
-        
-        int rook_file = rook_square & 7;
-        int rook_rank = rook_square >> 3;
-        
-        // Penalty for rook on same file/rank as king
-        if (rook_file == king_file || rook_rank == king_rank) {
-            score += EvalConstants::KING_ZONE_ATTACK_BONUS;
-        }
-    }
-    
-    return score;
-}
-
-// Evaluate king tropism (enemy pieces close to king) - optimized
-int Evaluation::evaluate_king_tropism(const Board& board, Board::Color color) const {
-    int score = 0;
-    Board::Color enemy_color = (color == Board::WHITE) ? Board::BLACK : Board::WHITE;
-    int king_pos = board.get_king_position(color);
-    
-    // Piece-specific tropism weights (more dangerous pieces get higher weights)
-    static const int tropism_weights[] = {0, 0, 3, 2, 4, 6}; // PAWN, KNIGHT, BISHOP, ROOK, QUEEN
-    static const int max_tropism_distance = 4;
-    
-    // Check distance of enemy pieces to king - optimized with piece-specific weights
-    for (int piece_type = Board::KNIGHT; piece_type <= Board::QUEEN; ++piece_type) {
-        Bitboard pieces = board.get_piece_bitboard(static_cast<Board::PieceType>(piece_type), enemy_color);
-        
-        if (!pieces) continue; // Skip if no pieces of this type
-        
-        uint64_t piece_bits = pieces;
-        int piece_weight = tropism_weights[piece_type];
-        
-        while (piece_bits) {
-            int square = get_lsb(piece_bits);
-            piece_bits &= piece_bits - 1;
-            
-            int distance = distance_between_squares(king_pos, square);
-            if (distance <= max_tropism_distance) {
-                // More sophisticated penalty calculation
-                int base_penalty = EvalConstants::KING_TROPISM_PENALTY;
-                int distance_multiplier = (max_tropism_distance + 1 - distance);
-                int piece_penalty = (base_penalty * piece_weight * distance_multiplier) / 4;
-                score += piece_penalty;
-            }
-        }
-    }
-    
-    // Special case: enemy pawns near king (different evaluation)
-    Bitboard enemy_pawns = board.get_piece_bitboard(Board::PAWN, enemy_color);
-    uint64_t pawn_bits = enemy_pawns;
-    while (pawn_bits) {
-        int pawn_square = get_lsb(pawn_bits);
-        pawn_bits &= pawn_bits - 1;
-        
-        int distance = distance_between_squares(king_pos, pawn_square);
-        if (distance <= 2) {
-            // Pawns are less dangerous but still contribute to king pressure
-            score += EvalConstants::KING_TROPISM_PENALTY * (3 - distance) / 2;
-        }
-    }
-    
-    return score;
-}
-
-// Evaluate pawn shield around king - optimized
+// I. STRUCTURAL SAFETY (Static Factors)
+// TODO: Test the pawn shield evaluation function with various board states
+// Pawn shield evaluation with detailed analysis
 int Evaluation::evaluate_pawn_shield(const Board& board, Board::Color color) const {
     int score = 0;
     int king_pos = board.get_king_position(color);
@@ -916,592 +673,550 @@ int Evaluation::evaluate_pawn_shield(const Board& board, Board::Color color) con
     int king_rank = king_pos >> 3;
     
     Bitboard pawns = board.get_piece_bitboard(Board::PAWN, color);
-    
-    // Optimized file range calculation
-    int start_file = std::max(0, king_file - 1);
-    int end_file = std::min(7, king_file + 1);
-    
-    // Direction for pawn advancement
     int pawn_direction = (color == Board::WHITE) ? 1 : -1;
     
-    // Check pawn shield in front of king - optimized with bitboard masks
-    for (int check_file = start_file; check_file <= end_file; ++check_file) {
-        bool found_shield = false;
+    // Calculate shield area around king (3 files: king_file-1, king_file, king_file+1)
+    // This optimization focuses evaluation on the immediate king area only
+    int left_file = max_int(0, king_file - 1);
+    int right_file = min_int(7, king_file + 1);
+    
+    // Create shield zone mask using precomputed file masks - avoids per-rank loops
+    // This bitboard represents all squares in the three files around the king
+    Bitboard shield_zone_mask = 0ULL;
+    for (int file = left_file; file <= right_file; ++file) {
+        shield_zone_mask |= file_masks[file];
+    }
+    
+    // Get pawns in shield zone only - eliminates checking irrelevant pawns
+    // This is a key optimization: we only work with pawns that matter for king safety
+    Bitboard shield_pawns_bb = pawns & shield_zone_mask;
+    
+    // 1. IMMEDIATE SHIELD EVALUATION (rank directly in front of king)
+    // The most critical defensive line - pawns one rank ahead of the king
+    int immediate_shield_rank = king_rank + pawn_direction;
+    int shield_pawns = 0;
+    int pawn_gaps = 0;
+    int connected_pawns = 0;
+    
+    if (immediate_shield_rank >= 0 && immediate_shield_rank <= 7) {
+        // Create rank mask for immediate shield using bit manipulation
+        // This replaces nested loops with efficient bitboard operations
+        Bitboard immediate_rank_mask = 0xFFULL << (immediate_shield_rank * 8);
+        Bitboard immediate_shield_mask = immediate_rank_mask & shield_zone_mask;
+        Bitboard immediate_shield_pawns = shield_pawns_bb & immediate_shield_mask;
         
-        // Check for pawn shield at different distances (closer is better)
-        for (int rank_offset = 1; rank_offset <= 3; ++rank_offset) {
-            int shield_rank = king_rank + (rank_offset * pawn_direction);
-            
-            // Bounds check
-            if (shield_rank < 0 || shield_rank > 7) break;
-            
-            int shield_square = (shield_rank << 3) | check_file;
-            if (pawns & (1ULL << shield_square)) {
-                // Bonus decreases with distance, but file position matters too
-                int base_bonus = EvalConstants::PAWN_SHIELD_BONUS;
-                int distance_factor = 4 - rank_offset; // Closer pawns are more valuable
-                int file_factor = (check_file == king_file) ? 2 : 1; // Direct file protection is more valuable
-                
-                score += (base_bonus * distance_factor * file_factor) / 3;
-                found_shield = true;
-                break; // Found shield pawn, no need to check further on this file
-            }
-        }
+        // Count shield pawns using efficient bit counting - replaces manual counting
+        shield_pawns = BitboardUtils::popcount(immediate_shield_pawns);
         
-        // Penalty for missing pawn shield on important files
-        if (!found_shield) {
-            // More penalty for missing shield directly in front of king
-            int missing_penalty = (check_file == king_file) ? -8 : -4;
-            score += missing_penalty;
+        // Calculate gaps efficiently: total possible positions minus actual pawns
+        pawn_gaps = (right_file - left_file + 1) - shield_pawns;
+        
+        // Count pairwise connections using optimized bitboard operations
+        // This counts actual adjacent pairs rather than individual connected pawns
+        int pairwise_connections = BitboardUtils::popcount(
+            (immediate_shield_pawns << 1) & immediate_shield_pawns & 0xFEFEFEFEFEFEFEFEULL
+        ) + BitboardUtils::popcount(
+            (immediate_shield_pawns >> 1) & immediate_shield_pawns & 0x7F7F7F7F7F7F7F7FULL
+        );
+        connected_pawns = pairwise_connections;
+    } else {
+        // King on edge rank - no shield possible, all files are gaps
+        pawn_gaps = right_file - left_file + 1;
+    }
+    
+    // 2. ADVANCED PAWNS EVALUATION (ranks 2-3 in front of king)
+    // Advanced pawns can weaken the shield by creating holes in the defense
+    int advanced_pawns = 0;
+    for (int rank_offset = 2; rank_offset <= 3; ++rank_offset) {
+        int check_rank = king_rank + (rank_offset * pawn_direction);
+        if (check_rank >= 0 && check_rank <= 7) {
+            // Use bitboard operations to efficiently check for advanced pawns
+            Bitboard advanced_rank_mask = 0xFFULL << (check_rank * 8);
+            Bitboard advanced_mask = advanced_rank_mask & shield_zone_mask;
+            Bitboard advanced_pawns_bb = shield_pawns_bb & advanced_mask;
+            advanced_pawns += BitboardUtils::popcount(advanced_pawns_bb);
         }
     }
     
-    // Additional evaluation: check for advanced enemy pawns near king
+    // Apply shield scoring based on calculated metrics
+    score += shield_pawns * EvalConstants::PAWN_SHIELD_BONUS;
+    score += connected_pawns * EvalConstants::CONNECTED_PAWNS_BONUS;
+    score -= pawn_gaps * 12; // Penalty for gaps in shield
+    score -= advanced_pawns * 8; // Penalty for advanced pawns weakening shelter
+    
+    // 3. PAWN STRUCTURE ANALYSIS USING EXISTING FUNCTIONS
+    // Leverage existing optimized pawn evaluation functions instead of reimplementing
+    // This avoids code duplication and uses precomputed masks for efficiency
+    
+    for (int file = left_file; file <= right_file; ++file) {
+        // Get all pawns on this file using precomputed file mask
+        Bitboard file_pawns = pawns & file_masks[file];
+        
+        if (file_pawns) {
+            // Find any pawn on this file to use with existing functions
+            // We use the first pawn found as a representative for file-based checks
+            int representative_square = BitboardUtils::lsb(file_pawns);
+            
+            // Use existing optimized doubled pawn function with precomputed masks
+            // This function already uses file_masks internally for efficiency
+            if (is_doubled_pawn(board, representative_square, color)) {
+                score += EvalConstants::DOUBLED_PAWN_PENALTY / 2; // Reduced penalty near king
+            }
+            
+            // Use existing optimized isolated pawn function with precomputed masks
+            // This function uses isolated_pawn_masks for O(1) adjacency checking
+            if (is_isolated_pawn(board, representative_square, color)) {
+                score += EvalConstants::ISOLATED_PAWN_PENALTY / 2; // Reduced penalty near king
+            }
+        }
+    }
+    
+    // 4. ADDITIONAL SHIELD QUALITY FACTORS
+    // Reuse pawn_gaps info for cleaner conditional logic
+    if (shield_pawns == 0) {
+        score -= EvalConstants::KING_EXPOSED_PENALTY;
+    } else if (pawn_gaps == 0) {
+        score += EvalConstants::KING_PAWN_SHIELD;
+    }
+    
+    // 5. ENEMY PAWN STORM EVALUATION (OPTIMIZED WITH PIPELINED BITBOARDS)
+    // Check for enemy pawns that could create threats against our king
     Board::Color enemy_color = (color == Board::WHITE) ? Board::BLACK : Board::WHITE;
     Bitboard enemy_pawns = board.get_piece_bitboard(Board::PAWN, enemy_color);
-    int enemy_direction = -pawn_direction;
     
-    // Check for enemy pawn storm
-    for (int check_file = start_file; check_file <= end_file; ++check_file) {
-        for (int rank_offset = 1; rank_offset <= 3; ++rank_offset) {
-            int storm_rank = king_rank + (rank_offset * enemy_direction);
+    // Build storm ranks mask in a single pass to reduce bitmasking logic
+    Bitboard storm_ranks_mask = 0ULL;
+    for (int r = 1; r <= 4; ++r) {
+        int rank = king_rank + (-pawn_direction * r);
+        if (rank >= 0 && rank <= 7) {
+            storm_ranks_mask |= (0xFFULL << (rank * 8));
+        }
+    }
+    
+    // Get all storm pawns in one operation
+    Bitboard storm_pawns = enemy_pawns & shield_zone_mask & storm_ranks_mask;
+    
+    // Compute storm danger using efficient bit manipulation
+    int storm_penalty = 0;
+    while (storm_pawns) {
+        int sq = BitboardUtils::pop_lsb(storm_pawns);
+        int sq_rank = sq >> 3;
+        int distance = abs_int(sq_rank - king_rank);
+        storm_penalty += (5 - distance);
+    }
+    
+    // Apply game phase scaling to storm penalty
+    // Storm threats are more dangerous in middlegame than endgame
+    // TODO: Add proper game phase detection - for now assume middlegame scaling
+    storm_penalty *= 1; // (phase == MIDDLEGAME) ? 1 : 0.5;
+    
+    score -= storm_penalty;
+    
+    return score;
+}
+
+// Evaluate open and semi-open files near the king
+int Evaluation::evaluate_open_files_near_king(const Board& board, Board::Color color) const {
+    int score = 0;
+    int king_pos = board.get_king_position(color);
+    int king_file = king_pos & 7;
+    Board::Color enemy_color = (color == Board::WHITE) ? Board::BLACK : Board::WHITE;
+    
+    // Check files around king
+    for (int file_offset = -2; file_offset <= 2; ++file_offset) {
+        int check_file = king_file + file_offset;
+        if (check_file < 0 || check_file > 7) continue;
+        
+        bool is_open = is_file_open(board, check_file);
+        bool is_semi_open = is_file_semi_open(board, check_file, color);
+        
+        if (is_open) {
+            // Open file penalty increases with proximity to king
+            int proximity_factor = 3 - abs_int(file_offset);
+            score += EvalConstants::OPEN_FILE_NEAR_KING_PENALTY * proximity_factor / 3;
             
-            if (storm_rank < 0 || storm_rank > 7) break;
-            
-            int storm_square = (storm_rank << 3) | check_file;
-            if (enemy_pawns & (1ULL << storm_square)) {
-                // Penalty for enemy pawns approaching king
-                int storm_penalty = -EvalConstants::PAWN_SHIELD_BONUS / (rank_offset + 1);
-                score += storm_penalty;
-                break;
+            // Extra penalty if king is directly on open file
+            if (check_file == king_file) {
+                score += EvalConstants::KING_ON_OPEN_FILE_PENALTY;
             }
+            
+            // Check if enemy major pieces can access this file
+            Bitboard enemy_rooks = board.get_piece_bitboard(Board::ROOK, enemy_color);
+            Bitboard enemy_queens = board.get_piece_bitboard(Board::QUEEN, enemy_color);
+            
+            uint64_t major_pieces = enemy_rooks | enemy_queens;
+            while (major_pieces) {
+                int sq = BitboardUtils::pop_lsb(major_pieces);
+                if ((sq & 7) == check_file) {
+                    score += EvalConstants::OPEN_FILE_NEAR_KING_PENALTY / 2;
+                }
+            }
+        } else if (is_semi_open) {
+            int proximity_factor = 3 - abs_int(file_offset);
+            score += EvalConstants::SEMI_OPEN_FILE_NEAR_KING_PENALTY * proximity_factor / 3;
         }
     }
     
     return score;
 }
 
-// Evaluate castling safety - optimized
-int Evaluation::evaluate_castling_safety(const Board& board, Board::Color color) const {
+// Evaluate king position safety (castled vs uncastled, edge vs center)
+int Evaluation::evaluate_king_position_safety(const Board& board, Board::Color color) const {
     int score = 0;
     int king_pos = board.get_king_position(color);
     int king_file = king_pos & 7;
     int king_rank = king_pos >> 3;
     int expected_rank = (color == Board::WHITE) ? 0 : 7;
+    GamePhase phase = get_game_phase(board);
     
-    // Check if king has castled
-    bool has_castled_kingside = (king_rank == expected_rank && king_file == 6);
-    bool has_castled_queenside = (king_rank == expected_rank && king_file == 2);
-    bool has_castled = has_castled_kingside || has_castled_queenside;
-    
-    if (has_castled) {
-        // Base castling bonus
+    // 1. Castled vs uncastled
+    bool is_castled = king_rank == expected_rank && (king_file == 2 || king_file == 6);
+    if (is_castled) {
         score += EvalConstants::CASTLING_BONUS;
         
-        // Kingside castling is generally safer
-        if (has_castled_kingside) {
-            score += EvalConstants::CASTLING_BONUS / 3;
-            
-            // Check if rook is still protecting after kingside castling
-            int rook_square = (expected_rank << 3) | 5; // f1/f8
-            Bitboard rooks = board.get_piece_bitboard(Board::ROOK, color);
-            if (rooks & (1ULL << rook_square)) {
-                score += 5; // Bonus for rook protection
-            }
+        // Kingside vs queenside safety
+        if (king_file == 6) { // Kingside
+            score += 10;
+        } else { // Queenside
+            score += 5;
+        }
+    }
+    
+    // 2. Edge vs center positioning
+    if (phase == OPENING || phase == MIDDLEGAME) {
+        // In opening/middlegame, edge is safer
+        if (king_file <= 2 || king_file >= 5) {
+            score += 8; // Edge bonus
         } else {
-            // Queenside castling - slightly less safe but still good
-            score += EvalConstants::CASTLING_BONUS / 4;
-            
-            // Check rook protection after queenside castling
-            int rook_square = (expected_rank << 3) | 3; // d1/d8
-            Bitboard rooks = board.get_piece_bitboard(Board::ROOK, color);
-            if (rooks & (1ULL << rook_square)) {
-                score += 3;
-            }
+            score -= 15; // Center penalty
         }
         
-        // Evaluate pawn shield quality after castling
-        Bitboard pawns = board.get_piece_bitboard(Board::PAWN, color);
-        int shield_files[] = {king_file - 1, king_file, king_file + 1};
-        int shield_count = 0;
+        // King stuck in center during middlegame is very unsafe
+        if (phase == MIDDLEGAME && king_file >= 3 && king_file <= 4 && king_rank != expected_rank) {
+            score += EvalConstants::KING_EXPOSED_PENALTY;
+        }
+    } else if (phase == ENDGAME) {
+        // In endgame, proximity to center is beneficial
+        int center_distance = min_int(abs_int(king_file - 3), abs_int(king_file - 4)) +
+                             min_int(abs_int(king_rank - 3), abs_int(king_rank - 4));
+        score += (6 - center_distance) * 3; // Bonus for centralization
+    }
+    
+    return score;
+}
+
+// Evaluate pawn storms (friendly or enemy pawns advancing toward king)
+int Evaluation::evaluate_pawn_storms(const Board& board, Board::Color color) const {
+    int score = 0;
+    int king_pos = board.get_king_position(color);
+    int king_file = king_pos & 7;
+    int king_rank = king_pos >> 3;
+    Board::Color enemy_color = (color == Board::WHITE) ? Board::BLACK : Board::WHITE;
+    
+    // Early exit: Skip pawn storm evaluation if neither side has likely castled
+    // Check if kings are in castled positions (files 2 or 6 on back ranks)
+    int expected_rank = (color == Board::WHITE) ? 0 : 7;
+    int enemy_expected_rank = (enemy_color == Board::WHITE) ? 0 : 7;
+    
+    bool king_castled = (king_rank == expected_rank && (king_file == 2 || king_file == 6));
+    
+    int enemy_king_pos = board.get_king_position(enemy_color);
+    int enemy_king_file = enemy_king_pos & 7;
+    int enemy_king_rank = enemy_king_pos >> 3;
+    bool enemy_king_castled = (enemy_king_rank == enemy_expected_rank && (enemy_king_file == 2 || enemy_king_file == 6));
+    
+    // If neither king has castled, pawn storms are less relevant
+    if (!king_castled && !enemy_king_castled) {
+        return 0;
+    }
+    
+    Bitboard enemy_pawns = board.get_piece_bitboard(Board::PAWN, enemy_color);
+    int enemy_direction = (enemy_color == Board::WHITE) ? 1 : -1;
+    
+    // Optimized: Iterate only over existing enemy pawns using pop_lsb
+    while (enemy_pawns) {
+        int sq = BitboardUtils::pop_lsb(enemy_pawns);
+        int file = sq & 7;
+        int rank = sq >> 3;
         
-        for (int i = 0; i < 3; ++i) {
-            int file = shield_files[i];
-            if (file >= 0 && file <= 7) {
-                int pawn_rank = expected_rank + ((color == Board::WHITE) ? 1 : -1);
-                if (pawn_rank >= 0 && pawn_rank <= 7) {
-                    int pawn_square = (pawn_rank << 3) | file;
-                    if (pawns & (1ULL << pawn_square)) {
-                        shield_count++;
-                    }
+        int file_offset = file - king_file;
+        int rank_offset = (rank - king_rank) * enemy_direction;
+        
+        // Skip pawns outside storm zone or moving away from king
+        if (abs_int(file_offset) > 2 || rank_offset <= 0 || rank_offset > 4)
+            continue;
+        
+        // Branchless penalty calculation
+        int proximity = 3 - abs_int(file_offset);
+        int advancement = 5 - rank_offset;
+        score -= (proximity * advancement * 3);
+        
+        // Extra penalty for wide pawn storms (opposite-side castling scenarios)
+        if (abs_int(file_offset) >= 2) {
+            score -= 8;
+        }
+    }
+    
+    return score;
+}
+
+// Evaluate piece cover (friendly minor pieces near king acting as defenders)
+int Evaluation::evaluate_piece_cover(const Board& board, Board::Color color) const {
+    int score = 0;
+    const int king_pos = board.get_king_position(color);
+    const int king_file = king_pos & 7;
+    const int king_rank = king_pos >> 3;
+    const int expected_rank = color == Board::WHITE ? 0 : 7;
+
+    int defending_pieces = 0;
+
+    auto evaluate_defender = [&](Bitboard defenders, int max_distance, int base_bonus, bool is_bishop) {
+        while (defenders) {
+            int sq = BitboardUtils::pop_lsb(defenders);
+            int file = sq & 7;
+            int rank = sq >> 3;
+
+            int dist = max_int(abs_int((sq & 7) - king_file), abs_int((sq >> 3) - king_rank));
+            if (dist > max_distance) continue;
+
+            defending_pieces++;
+            score += base_bonus;
+
+            if (dist <= 2 && !is_bishop)
+                score += 4; // extra bonus for knight close to king
+
+            // Check fianchetto bishop
+            if (is_bishop && rank == expected_rank + (color == Board::WHITE ? 1 : -1)) {
+                if ((king_file <= 3 && file <= 2) || (king_file >= 4 && file >= 5)) {
+                    score += EvalConstants::FIANCHETTO_BONUS;
                 }
             }
         }
-        score += shield_count * 4; // Bonus for pawn shield
-        
-    } else if (king_rank == expected_rank && king_file == 4) {
-        // King on starting square - has castling rights
-        score += EvalConstants::CASTLING_RIGHTS_BONUS;
-        
-        // Check if castling is still viable (rooks in place)
-        Bitboard rooks = board.get_piece_bitboard(Board::ROOK, color);
-        bool kingside_rook = rooks & (1ULL << ((expected_rank << 3) | 7));
-        bool queenside_rook = rooks & (1ULL << ((expected_rank << 3) | 0));
-        
-        if (kingside_rook) score += 3;
-        if (queenside_rook) score += 2;
-        
-        // Penalty for delaying castling in middlegame
-        int total_pieces = 0;
-        for (int c = 0; c < 2; ++c) {
-            for (int pt = 0; pt < 6; ++pt) {
-                Bitboard pieces = board.get_piece_bitboard(static_cast<Board::PieceType>(pt), 
-                                                          static_cast<Board::Color>(c));
-                total_pieces += count_bits(pieces);
-            }
-        }
-        if (total_pieces < 20) { // Middlegame
-            score -= 8; // Encourage castling
-        }
-        
-    } else {
-        // King has moved but not castled
-        score -= EvalConstants::CASTLING_BONUS / 2;
-        
-        // Additional penalty for king in center
-        if (king_file >= 3 && king_file <= 5) {
-            score -= 12;
-        }
-        
-        // Penalty for king advancement in opening/middlegame
-        int total_pieces = 0;
-        for (int c = 0; c < 2; ++c) {
-            for (int pt = 0; pt < 6; ++pt) {
-                Bitboard pieces = board.get_piece_bitboard(static_cast<Board::PieceType>(pt), 
-                                                          static_cast<Board::Color>(c));
-                total_pieces += count_bits(pieces);
-            }
-        }
-        if (total_pieces > 16) { // Still early in game
-            int rank_penalty = (color == Board::WHITE) ? 
-                std::max(0, king_rank - expected_rank) : 
-                std::max(0, expected_rank - king_rank);
-            score -= rank_penalty * 6;
-        }
-    }
-    
+    };
+
+    evaluate_defender(board.get_piece_bitboard(Board::KNIGHT, color), 3, 8, false);
+    evaluate_defender(board.get_piece_bitboard(Board::BISHOP, color), 4, 6, true);
+
+    if (defending_pieces == 0)
+        score -= 15;
+    else if (defending_pieces == 1)
+        score -= 5;
+
     return score;
 }
 
-// Evaluate back rank safety - optimized
-int Evaluation::evaluate_back_rank_safety(const Board& board, Board::Color color) const {
+
+// II. THREAT EVALUATION (Dynamic Factors)
+
+// Evaluate attacking pieces nearby with weight system
+int Evaluation::evaluate_attacking_pieces_nearby(const Board& board, Board::Color color) const {
     int score = 0;
     int king_pos = board.get_king_position(color);
-    int king_file = king_pos & 7;
-    int king_rank = king_pos >> 3;
-    int expected_rank = (color == Board::WHITE) ? 0 : 7;
     Board::Color enemy_color = (color == Board::WHITE) ? Board::BLACK : Board::WHITE;
     
-    // Only evaluate if king is on back rank
-    if (king_rank != expected_rank) {
-        return score; // King not on back rank, no back rank weakness
-    }
+    // Cache king coordinates to avoid recomputing in inner loops
+    int king_rank = king_pos >> 3;
+    int king_file = king_pos & 7;
     
-    // Get enemy attacking pieces
-    Bitboard enemy_rooks = board.get_piece_bitboard(Board::ROOK, enemy_color);
-    Bitboard enemy_queens = board.get_piece_bitboard(Board::QUEEN, enemy_color);
-    Bitboard back_rank_attackers = enemy_rooks | enemy_queens;
+    // Attack weight system: queen = 4, rook = 2, bishop/knight = 1
+    static const int attack_weights[] = {0, 1, 1, 2, 4, 0}; // PAWN, KNIGHT, BISHOP, ROOK, QUEEN, KING
     
-    // Early return if no potential attackers
-    if (!back_rank_attackers) {
-        return score;
-    }
+    int total_attack_weight = 0;
+    int attacking_pieces_count = 0;
     
-    // Check for back rank mate threats
-    bool has_back_rank_threat = false;
-    
-    // Check if any enemy rook/queen can attack the back rank
-    uint64_t attacker_bits = back_rank_attackers;
-    while (attacker_bits) {
-        int square = get_lsb(attacker_bits);
-        attacker_bits &= attacker_bits - 1;
+    // Check each enemy piece type
+    for (int piece_type = Board::KNIGHT; piece_type <= Board::QUEEN; ++piece_type) {
+        Bitboard pieces = board.get_piece_bitboard(static_cast<Board::PieceType>(piece_type), enemy_color);
         
-        int piece_file = square & 7;
-        int piece_rank = square >> 3;
-        
-        // Check if piece can attack king's rank (same rank or file)
-        if (piece_rank == expected_rank || piece_file == king_file) {
-            has_back_rank_threat = true;
-            break;
+        // Use BitboardUtils::pop_lsb for efficient bit extraction
+        while (pieces) {
+            int piece_square = BitboardUtils::pop_lsb(pieces);
+            
+            // Calculate distance using cached king coordinates
+            int piece_rank = piece_square >> 3;
+            int piece_file = piece_square & 7;
+            int rank_diff = abs_int(king_rank - piece_rank);
+            int file_diff = abs_int(king_file - piece_file);
+            int distance = max_int(rank_diff, file_diff); // Chebyshev distance
+            
+            // Consider pieces within 4 squares as "nearby"
+            if (distance <= 4) {
+                int weight = attack_weights[piece_type];
+                
+                // Weight decreases with distance
+                int distance_factor = (5 - distance);
+                total_attack_weight += (weight * distance_factor) / 2;
+                attacking_pieces_count++;
+                
+                // Direct logical checks for alignment (removed has_clear_line variable)
+                bool is_aligned = false;
+                
+                // Check rank/file alignment for rooks and queens
+                if ((piece_type == Board::ROOK || piece_type == Board::QUEEN) &&
+                    (piece_rank == king_rank || piece_file == king_file)) {
+                    is_aligned = true;
+                }
+                
+                // Check diagonal alignment for bishops and queens
+                if ((piece_type == Board::BISHOP || piece_type == Board::QUEEN) &&
+                    (rank_diff == file_diff)) {
+                    is_aligned = true;
+                }
+                
+                if (is_aligned) {
+                    score -= weight * 8; // Extra penalty for pieces with clear lines
+                }
+            }
         }
     }
     
-    if (!has_back_rank_threat) {
-        return score;
-    }
+    // Apply penalties based on total attack weight
+    score -= total_attack_weight * 3;
     
-    // Evaluate escape squares more efficiently
-    Bitboard own_pieces = board.get_color_bitboard(color);
-    Bitboard enemy_pieces = board.get_color_bitboard(enemy_color);
-    Bitboard all_pieces = own_pieces | enemy_pieces;
-    
-    int escape_rank = (color == Board::WHITE) ? 1 : 6;
-    int escape_squares = 0;
-    int blocked_squares = 0;
-    
-    // Check escape squares in front of king
-    for (int file_offset = -1; file_offset <= 1; ++file_offset) {
-        int escape_file = king_file + file_offset;
-        if (escape_file < 0 || escape_file > 7) continue;
-        
-        int escape_square = (escape_rank << 3) | escape_file;
-        
-        if (!(own_pieces & (1ULL << escape_square))) {
-            escape_squares++;
-        } else {
-            blocked_squares++;
-        }
-    }
-    
-    // Calculate penalty based on escape squares availability
-    if (escape_squares == 0) {
-        // No escape squares - severe back rank weakness
-        score += EvalConstants::BACK_RANK_WEAKNESS_PENALTY;
-        
-        // Additional penalty if all squares are blocked by own pieces
-        if (blocked_squares == 3) {
-            score += EvalConstants::BACK_RANK_WEAKNESS_PENALTY / 2;
-        }
-    } else if (escape_squares == 1) {
-        // Only one escape square - moderate weakness
-        score += EvalConstants::BACK_RANK_WEAKNESS_PENALTY / 2;
-    } else if (escape_squares == 2) {
-        // Two escape squares - minor weakness
-        score += EvalConstants::BACK_RANK_WEAKNESS_PENALTY / 4;
-    }
-    // Three escape squares = no penalty
-    
-    // Additional evaluation: check for defending pieces
-    Bitboard own_rooks = board.get_piece_bitboard(Board::ROOK, color);
-    Bitboard own_queens = board.get_piece_bitboard(Board::QUEEN, color);
-    Bitboard defenders = own_rooks | own_queens;
-    
-    // Check if we have pieces defending the back rank
-    uint64_t defender_bits = defenders;
-    bool has_back_rank_defender = false;
-    
-    while (defender_bits) {
-        int square = get_lsb(defender_bits);
-        defender_bits &= defender_bits - 1;
-        
-        int piece_rank = square >> 3;
-        if (piece_rank == expected_rank) {
-            has_back_rank_defender = true;
-            break;
-        }
-    }
-    
-    // Bonus for having defenders on back rank
-    if (has_back_rank_defender) {
-        score -= EvalConstants::BACK_RANK_WEAKNESS_PENALTY / 3;
-    }
+    // Progressive penalty for multiple attackers (simplified conditional)
+    score -= (attacking_pieces_count >= 3) ? 20 : (attacking_pieces_count >= 2) ? 10 : 0;
     
     return score;
 }
 
-// Evaluate king escape squares - optimized
-int Evaluation::evaluate_king_escape_squares(const Board& board, Board::Color color) const {
+// Evaluate king mobility and escape squares
+int Evaluation::evaluate_king_mobility_and_escape(const Board& board, Board::Color color) const {
     int score = 0;
     int king_pos = board.get_king_position(color);
-    int king_file = king_pos & 7;
-    int king_rank = king_pos >> 3;
+    Board::Color enemy_color = color == Board::WHITE ? Board::BLACK : Board::WHITE;
     
+    // Cache bitboards for efficient square occupancy tests
     Bitboard own_pieces = board.get_color_bitboard(color);
-    Bitboard enemy_pieces = board.get_color_bitboard((color == Board::WHITE) ? Board::BLACK : Board::WHITE);
-    Bitboard all_pieces = own_pieces | enemy_pieces;
-    
+
     int escape_squares = 0;
     int safe_escape_squares = 0;
     int attacked_escape_squares = 0;
+    int blocked_escape_squares = 0;
     
-    // Pre-calculate king movement offsets for efficiency
-    static const int king_offsets[8][2] = {
-        {-1, -1}, {-1, 0}, {-1, 1},
-        {0, -1},           {0, 1},
-        {1, -1},  {1, 0},  {1, 1}
-    };
+    // Use precomputed king attack table for adjacent squares
+    Bitboard king_attacks = BitboardUtils::king_attacks(king_pos);
     
-    // Check all adjacent squares more efficiently
-    for (int i = 0; i < 8; ++i) {
-        int new_rank = king_rank + king_offsets[i][0];
-        int new_file = king_file + king_offsets[i][1];
+    while (king_attacks) {
+        int escape_square = BitboardUtils::pop_lsb(king_attacks);
         
-        // Bounds check
-        if (new_rank < 0 || new_rank > 7 || new_file < 0 || new_file > 7) {
+        // Optimized square occupancy test using bitboard
+        if (BitboardUtils::get_bit(own_pieces, escape_square)) {
+            blocked_escape_squares++;
             continue;
         }
         
-        int escape_square = (new_rank << 3) | new_file;
+        escape_squares++;
         
-        // Check if square is not occupied by own piece
-        if (!(own_pieces & (1ULL << escape_square))) {
-            escape_squares++;
-            
-            // Additional evaluation: check if escape square is safe
-            bool is_safe = true;
-            
-            // Quick check for enemy piece occupation
-            if (enemy_pieces & (1ULL << escape_square)) {
-                is_safe = false; // Enemy piece on square
-            } else {
-                // Check if square is attacked by enemy pieces (simplified)
-                // This is a basic check - a full implementation would use attack tables
-                
-                // Check for enemy pawn attacks
-                Board::Color enemy_color = (color == Board::WHITE) ? Board::BLACK : Board::WHITE;
-                int pawn_attack_rank = new_rank + ((enemy_color == Board::WHITE) ? 1 : -1);
-                
-                if (pawn_attack_rank >= 0 && pawn_attack_rank <= 7) {
-                    Bitboard enemy_pawns = board.get_piece_bitboard(Board::PAWN, enemy_color);
-                    
-                    // Check diagonal pawn attacks
-                    for (int pawn_file_offset = -1; pawn_file_offset <= 1; pawn_file_offset += 2) {
-                        int pawn_file = new_file + pawn_file_offset;
-                        if (pawn_file >= 0 && pawn_file <= 7) {
-                            int pawn_square = (pawn_attack_rank << 3) | pawn_file;
-                            if (enemy_pawns & (1ULL << pawn_square)) {
-                                is_safe = false;
-                                break;
-                            }
-                        }
-                    }
-                }
-                
-                // Check for enemy king attacks (kings can't be adjacent)
-                int enemy_king_pos = board.get_king_position(enemy_color);
-                int enemy_king_file = enemy_king_pos & 7;
-                int enemy_king_rank = enemy_king_pos >> 3;
-                
-                int file_diff = abs(new_file - enemy_king_file);
-                int rank_diff = abs(new_rank - enemy_king_rank);
-                
-                if (file_diff <= 1 && rank_diff <= 1) {
-                    is_safe = false;
-                }
-            }
-            
-            if (is_safe) {
-                safe_escape_squares++;
-            } else {
-                attacked_escape_squares++;
-            }
+        // This checks attacks from all enemy pieces: pawns, knights, bishops, rooks, queens, and king
+        bool is_attacked = board.is_square_attacked(escape_square, enemy_color);
+        
+        if (is_attacked) {
+            attacked_escape_squares++;
+        } else {
+            safe_escape_squares++;
         }
     }
     
-    // Calculate score based on escape square quality
+    // Scoring based on escape square quality
     score += safe_escape_squares * EvalConstants::KING_ESCAPE_SQUARES_BONUS;
-    score += attacked_escape_squares * (EvalConstants::KING_ESCAPE_SQUARES_BONUS / 3); // Partial credit for attacked squares
+    score += attacked_escape_squares * (EvalConstants::KING_ESCAPE_SQUARES_BONUS / 3);
     
-    // Penalty for having very few escape squares (trapped king)
-    if (escape_squares <= 2) {
-        score -= (3 - escape_squares) * 8; // Increasing penalty for fewer squares
+    // Severe penalty for trapped king
+    if (safe_escape_squares == 0) {
+        score -= 25;
+        if (attacked_escape_squares == 0 && blocked_escape_squares >= 6) {
+            score -= 30; // King is completely trapped
+        }
     }
     
-    // Bonus for having many safe escape squares
+    // Bonus for very mobile king
     if (safe_escape_squares >= 6) {
-        score += 5; // Bonus for very mobile king
+        score += 8;
     }
     
     return score;
 }
 
-// Evaluate tactical threats to king - optimized
+// Tactical threats evaluation
 int Evaluation::evaluate_tactical_threats_to_king(const Board& board, Board::Color color) const {
     int score = 0;
+
+    // 1. Pins, skewers, forks involving the king
+    score += evaluate_pins(board, color);
+    
+    return score;
+}
+
+// Helper function for pins to the king
+int Evaluation::evaluate_pins(const Board& board, Board::Color color) const {
+    int score = 0;
     int king_pos = board.get_king_position(color);
-    int king_file = king_pos & 7;
-    int king_rank = king_pos >> 3;
     Board::Color enemy_color = (color == Board::WHITE) ? Board::BLACK : Board::WHITE;
     
-    // Get enemy pieces
-    Bitboard enemy_bishops = board.get_piece_bitboard(Board::BISHOP, enemy_color);
+    // Early exit if no enemy sliding pieces
     Bitboard enemy_rooks = board.get_piece_bitboard(Board::ROOK, enemy_color);
+    Bitboard enemy_bishops = board.get_piece_bitboard(Board::BISHOP, enemy_color);
     Bitboard enemy_queens = board.get_piece_bitboard(Board::QUEEN, enemy_color);
-    Bitboard enemy_knights = board.get_piece_bitboard(Board::KNIGHT, enemy_color);
     
-    // Check for direct attacks on king
-    int direct_attackers = 0;
-    
-    // Check rook/queen attacks on same rank/file
-    Bitboard rank_file_attackers = enemy_rooks | enemy_queens;
-    uint64_t rf_bits = rank_file_attackers;
-    
-    while (rf_bits) {
-        int attacker_square = get_lsb(rf_bits);
-        rf_bits &= rf_bits - 1;
-        
-        int attacker_rank = attacker_square >> 3;
-        int attacker_file = attacker_square & 7;
-        
-        // Check if on same rank or file
-        if (attacker_rank == king_rank || attacker_file == king_file) {
-            direct_attackers++;
-            
-            // Distance-based penalty (closer is more dangerous)
-            int distance = abs(attacker_rank - king_rank) + abs(attacker_file - king_file);
-            score += EvalConstants::PIN_ON_KING_PENALTY / std::max(1, distance - 1);
-        }
+    if (!(enemy_rooks | enemy_bishops | enemy_queens)) {
+        return 0; // No sliding pieces to create pins
     }
     
-    // Check bishop/queen attacks on diagonals
-    Bitboard diagonal_attackers = enemy_bishops | enemy_queens;
-    uint64_t diag_bits = diagonal_attackers;
-    
-    while (diag_bits) {
-        int attacker_square = get_lsb(diag_bits);
-        diag_bits &= diag_bits - 1;
-        
-        int attacker_rank = attacker_square >> 3;
-        int attacker_file = attacker_square & 7;
-        
-        // Check if on same diagonal
-        if (abs(attacker_rank - king_rank) == abs(attacker_file - king_file)) {
-            direct_attackers++;
-            
-            // Distance-based penalty
-            int distance = abs(attacker_rank - king_rank);
-            score += EvalConstants::PIN_ON_KING_PENALTY / std::max(1, distance - 1);
-        }
-    }
-    
-    // Check knight attacks (knights are particularly dangerous in close quarters)
-    uint64_t knight_bits = enemy_knights;
-    while (knight_bits) {
-        int knight_square = get_lsb(knight_bits);
-        knight_bits &= knight_bits - 1;
-        
-        int knight_rank = knight_square >> 3;
-        int knight_file = knight_square & 7;
-        
-        // Check if knight can attack king (L-shaped moves)
-        int rank_diff = abs(knight_rank - king_rank);
-        int file_diff = abs(knight_file - king_file);
-        
-        if ((rank_diff == 2 && file_diff == 1) || (rank_diff == 1 && file_diff == 2)) {
-            direct_attackers++;
-            score += EvalConstants::PIN_ON_KING_PENALTY;
-        } else if (rank_diff <= 2 && file_diff <= 2 && (rank_diff + file_diff) <= 3) {
-            // Knight is close to king - potential threat
-            score += EvalConstants::PIN_ON_KING_PENALTY / 3;
-        }
-    }
-    
-    // Penalty multiplier for multiple attackers
-    if (direct_attackers >= 2) {
-        score += direct_attackers * EvalConstants::PIN_ON_KING_PENALTY / 2;
-    }
-    
-    // Check for pinned pieces (simplified but more accurate)
     Bitboard own_pieces = board.get_color_bitboard(color);
     Bitboard all_pieces = own_pieces | board.get_color_bitboard(enemy_color);
     
-    // Check for pins along ranks and files
+    // Check rook/queen pins (horizontal and vertical)
     Bitboard rank_file_pinners = enemy_rooks | enemy_queens;
-    uint64_t pinner_bits = rank_file_pinners;
-    
-    while (pinner_bits) {
-        int pinner_square = get_lsb(pinner_bits);
-        pinner_bits &= pinner_bits - 1;
+    while (rank_file_pinners) {
+        int pinner_square = BitboardUtils::pop_lsb(rank_file_pinners);
         
-        int pinner_rank = pinner_square >> 3;
-        int pinner_file = pinner_square & 7;
+        // Get rook attacks from pinner position with all pieces as blockers
+        Bitboard pinner_attacks = BitboardUtils::rook_attacks(pinner_square, all_pieces);
         
-        // Check if pinner is on same rank or file as king
-        if (pinner_rank == king_rank || pinner_file == king_file) {
-            // Count pieces between pinner and king
-            int pieces_between = 0;
-            int start_pos, end_pos, step;
+        // Check if king is in the attack ray
+        if (BitboardUtils::get_bit(pinner_attacks, king_pos)) {
+            // Get rook attacks from king position with all pieces as blockers
+            Bitboard king_attacks = BitboardUtils::rook_attacks(king_pos, all_pieces);
             
-            if (pinner_rank == king_rank) {
-                // Same rank
-                start_pos = std::min(pinner_file, king_file) + 1;
-                end_pos = std::max(pinner_file, king_file);
-                step = 1;
+            // Check if pinner is in king's attack ray (confirming they're on same rank/file)
+            if (BitboardUtils::get_bit(king_attacks, pinner_square)) {
+                // Get pieces between king and pinner by removing both endpoints
+                Bitboard between_mask = pinner_attacks & king_attacks;
+                Bitboard pieces_between = between_mask & all_pieces;
                 
-                for (int f = start_pos; f < end_pos; ++f) {
-                    int check_square = (king_rank << 3) | f;
-                    if (all_pieces & (1ULL << check_square)) {
-                        pieces_between++;
-                        if (own_pieces & (1ULL << check_square)) {
-                            // Our piece is pinned
-                            if (pieces_between == 1) {
-                                score += EvalConstants::DISCOVERED_CHECK_THREAT_PENALTY;
-                            }
-                        }
-                    }
-                }
-            } else {
-                // Same file
-                start_pos = std::min(pinner_rank, king_rank) + 1;
-                end_pos = std::max(pinner_rank, king_rank);
-                
-                for (int r = start_pos; r < end_pos; ++r) {
-                    int check_square = (r << 3) | king_file;
-                    if (all_pieces & (1ULL << check_square)) {
-                        pieces_between++;
-                        if (own_pieces & (1ULL << check_square)) {
-                            // Our piece is pinned
-                            if (pieces_between == 1) {
-                                score += EvalConstants::DISCOVERED_CHECK_THREAT_PENALTY;
-                            }
-                        }
+                // Check if exactly one piece between them and it's our own
+                if (BitboardUtils::popcount(pieces_between) == 1) {
+                    if (pieces_between & own_pieces) {
+                        score += EvalConstants::PIN_ON_KING_PENALTY;
                     }
                 }
             }
         }
     }
     
-    // Check for fork threats (simplified)
-    uint64_t enemy_knight_bits = enemy_knights;
-    while (enemy_knight_bits) {
-        int knight_square = get_lsb(enemy_knight_bits);
-        enemy_knight_bits &= enemy_knight_bits - 1;
+    // Check bishop/queen pins (diagonal)
+    Bitboard diagonal_pinners = enemy_bishops | enemy_queens;
+    while (diagonal_pinners) {
+        int pinner_square = BitboardUtils::pop_lsb(diagonal_pinners);
         
-        // Check if knight can fork king and another valuable piece
-        // This is a simplified check for demonstration
-        int knight_rank = knight_square >> 3;
-        int knight_file = knight_square & 7;
+        // Get bishop attacks from pinner position with all pieces as blockers
+        Bitboard pinner_attacks = BitboardUtils::bishop_attacks(pinner_square, all_pieces);
         
-        // Check all knight moves for potential forks
-        static const int knight_moves[8][2] = {
-            {-2, -1}, {-2, 1}, {-1, -2}, {-1, 2},
-            {1, -2}, {1, 2}, {2, -1}, {2, 1}
-        };
-        
-        for (int i = 0; i < 8; ++i) {
-            int target_rank = knight_rank + knight_moves[i][0];
-            int target_file = knight_file + knight_moves[i][1];
+        // Check if king is in the attack ray
+        if (BitboardUtils::get_bit(pinner_attacks, king_pos)) {
+            // Get bishop attacks from king position with all pieces as blockers
+            Bitboard king_attacks = BitboardUtils::bishop_attacks(king_pos, all_pieces);
             
-            if (target_rank >= 0 && target_rank <= 7 && target_file >= 0 && target_file <= 7) {
-                int target_square = (target_rank << 3) | target_file;
+            // Check if pinner is in king's attack ray (confirming they're on same diagonal)
+            if (BitboardUtils::get_bit(king_attacks, pinner_square)) {
+                // Get pieces between king and pinner by finding intersection
+                Bitboard between_mask = pinner_attacks & king_attacks;
+                Bitboard pieces_between = between_mask & all_pieces;
                 
-                // If knight can attack king from this square
-                if (target_square == king_pos) {
-                    // Check if knight can also attack other valuable pieces
-                    Bitboard valuable_pieces = board.get_piece_bitboard(Board::QUEEN, color) |
-                                             board.get_piece_bitboard(Board::ROOK, color);
-                    
-                    for (int j = 0; j < 8; ++j) {
-                        int fork_rank = target_rank + knight_moves[j][0];
-                        int fork_file = target_file + knight_moves[j][1];
-                        
-                        if (fork_rank >= 0 && fork_rank <= 7 && fork_file >= 0 && fork_file <= 7) {
-                            int fork_square = (fork_rank << 3) | fork_file;
-                            if (valuable_pieces & (1ULL << fork_square)) {
-                                score += EvalConstants::PIN_ON_KING_PENALTY / 2; // Fork threat
-                                break;
-                            }
-                        }
+                // Check if exactly one piece between them and it's our own
+                if (BitboardUtils::popcount(pieces_between) == 1) {
+                    if (pieces_between & own_pieces) {
+                        score += EvalConstants::PIN_ON_KING_PENALTY;
                     }
                 }
             }
@@ -1511,6 +1226,245 @@ int Evaluation::evaluate_tactical_threats_to_king(const Board& board, Board::Col
     return score;
 }
 
+// Evaluate attack maps and pressure zones (optimized with bitboard operations)
+// Comprehensive king safety evaluation combining attack maps, pressure zones, and line of fire threats
+int Evaluation::evaluate_attack_maps_pressure_zones(const Board& board, Board::Color color) const {
+    // Constants for evaluation
+    static constexpr int LINE_OF_FIRE_PENALTY = 12;
+    static constexpr int BACK_RANK_LINE_PENALTY = 15;
+    static constexpr int CLOSE_DISTANCE_PENALTY = 8;
+    static constexpr int DIAGONAL_LINE_PENALTY = 10;
+    static constexpr int DIAGONAL_CLOSE_PENALTY = 6;
+    static constexpr int MAX_LINE_DISTANCE = 4;
+    static constexpr int CLOSE_DISTANCE_THRESHOLD = 2;
+    static constexpr int MIN_BLOCKED_ESCAPE_SQUARES = 2;
+    static constexpr int CONTROLLED_SQUARE_PENALTY = 6;
+    static constexpr int UNDEFENDED_SQUARE_PENALTY = 10;
+    static constexpr int ZONE_CONTROL_PENALTY = 20;
+    
+    int score = 0;
+    int king_pos = board.get_king_position(color);
+    int king_rank = king_pos >> 3;
+    int king_file = king_pos & 7;
+    int expected_rank = (color == Board::WHITE) ? 0 : 7;
+    Board::Color enemy_color = (color == Board::WHITE) ? Board::BLACK : Board::WHITE;
+    
+    // Early exit if no enemy pieces
+    Bitboard enemy_pieces = board.get_color_bitboard(enemy_color);
+    if (!enemy_pieces) {
+        return 0;
+    }
+    
+    // Cache frequently used bitboards
+    Bitboard all_pieces = board.get_all_pieces();
+    Bitboard enemy_pawns = board.get_piece_bitboard(Board::PAWN, enemy_color);
+    Bitboard enemy_knights = board.get_piece_bitboard(Board::KNIGHT, enemy_color);
+    Bitboard enemy_bishops = board.get_piece_bitboard(Board::BISHOP, enemy_color);
+    Bitboard enemy_rooks = board.get_piece_bitboard(Board::ROOK, enemy_color);
+    Bitboard enemy_queens = board.get_piece_bitboard(Board::QUEEN, enemy_color);
+    
+    Bitboard our_pawns = board.get_piece_bitboard(Board::PAWN, color);
+    Bitboard our_knights = board.get_piece_bitboard(Board::KNIGHT, color);
+    Bitboard our_bishops = board.get_piece_bitboard(Board::BISHOP, color);
+    Bitboard our_rooks = board.get_piece_bitboard(Board::ROOK, color);
+    Bitboard our_queens = board.get_piece_bitboard(Board::QUEEN, color);
+    
+    // === PART 1: ATTACK MAPS AND PRESSURE ZONES ===
+    
+    // Use precomputed king zone mask (3x3 area around king)
+    Bitboard king_zone = BitboardUtils::king_attacks(king_pos) | (1ULL << king_pos);
+    Bitboard king_square_mask = 1ULL << king_pos;
+    
+    // Calculate enemy attack map efficiently
+    Bitboard enemy_attack_map = 0ULL;
+    
+    // Enemy pawn attacks
+    if (enemy_pawns) {
+        enemy_attack_map |= BitboardUtils::pawn_attacks(enemy_pawns, enemy_color);
+    }
+    
+    // Enemy knight attacks
+    Bitboard temp_knights = enemy_knights;
+    while (temp_knights) {
+        int knight_square = BitboardUtils::pop_lsb(temp_knights);
+        enemy_attack_map |= BitboardUtils::knight_attacks(knight_square);
+    }
+    
+    // Enemy sliding piece attacks (will be used for both attack map and line of fire)
+    Bitboard diagonal_attackers = enemy_bishops | enemy_queens;
+    Bitboard rank_file_attackers = enemy_rooks | enemy_queens;
+    
+    // Enemy bishop/queen diagonal attacks
+    Bitboard temp_diagonal = diagonal_attackers;
+    while (temp_diagonal) {
+        int piece_square = BitboardUtils::pop_lsb(temp_diagonal);
+        enemy_attack_map |= BitboardUtils::bishop_attacks(piece_square, all_pieces);
+    }
+    
+    // Enemy rook/queen rank/file attacks
+    Bitboard temp_rank_file = rank_file_attackers;
+    while (temp_rank_file) {
+        int piece_square = BitboardUtils::pop_lsb(temp_rank_file);
+        enemy_attack_map |= BitboardUtils::rook_attacks(piece_square, all_pieces);
+    }
+    
+    // Enemy king attacks (less relevant unless endgame)
+    GamePhase phase = get_game_phase(board);
+    if (phase == ENDGAME) {
+        int enemy_king_pos = board.get_king_position(enemy_color);
+        enemy_attack_map |= BitboardUtils::king_attacks(enemy_king_pos);
+    }
+    
+    // Calculate our defense map using actual attack sets
+    Bitboard our_defense_map = 0ULL;
+    
+    // Our pawn defenses
+    if (our_pawns) {
+        our_defense_map |= BitboardUtils::pawn_attacks(our_pawns, color);
+    }
+    
+    // Our knight defenses
+    Bitboard temp_our_knights = our_knights;
+    while (temp_our_knights) {
+        int knight_square = BitboardUtils::pop_lsb(temp_our_knights);
+        our_defense_map |= BitboardUtils::knight_attacks(knight_square);
+    }
+    
+    // Our bishop/queen diagonal defenses
+    Bitboard our_diagonal_defenders = our_bishops | our_queens;
+    while (our_diagonal_defenders) {
+        int piece_square = BitboardUtils::pop_lsb(our_diagonal_defenders);
+        our_defense_map |= BitboardUtils::bishop_attacks(piece_square, all_pieces);
+    }
+    
+    // Our rook/queen rank/file defenses
+    Bitboard our_rank_file_defenders = our_rooks | our_queens;
+    while (our_rank_file_defenders) {
+        int piece_square = BitboardUtils::pop_lsb(our_rank_file_defenders);
+        our_defense_map |= BitboardUtils::rook_attacks(piece_square, all_pieces);
+    }
+    
+    // Our king defenses
+    our_defense_map |= BitboardUtils::king_attacks(king_pos);
+    
+    // Analyze king zone control
+    Bitboard controlled_zone = enemy_attack_map & king_zone;
+    Bitboard undefended_zone = controlled_zone & ~our_defense_map;
+    
+    // Remove king square from analysis
+    controlled_zone &= ~king_square_mask;
+    undefended_zone &= ~king_square_mask;
+    
+    int controlled_squares = BitboardUtils::popcount(controlled_zone);
+    int undefended_squares = BitboardUtils::popcount(undefended_zone);
+    int total_zone_squares = BitboardUtils::popcount(king_zone) - 1; // Exclude king square
+    
+    // Penalties based on enemy control
+    score -= controlled_squares * CONTROLLED_SQUARE_PENALTY;
+    score -= undefended_squares * UNDEFENDED_SQUARE_PENALTY;
+    
+    // Extra penalty if most of king zone is controlled
+    if (controlled_squares >= total_zone_squares * 2 / 3) {
+        score -= ZONE_CONTROL_PENALTY;
+    }
+    
+    // === PART 2: LINE OF FIRE THREATS ===
+    
+    // Check if we should skip sliding piece analysis
+    bool skip_sliding_analysis = !(enemy_rooks | enemy_bishops | enemy_queens);
+    
+    if (!skip_sliding_analysis) {
+    
+        // Check rook/queen line of fire threats (rank and file)
+        temp_rank_file = rank_file_attackers;
+        while (temp_rank_file) {
+            int piece_square = BitboardUtils::pop_lsb(temp_rank_file);
+            
+            // Use rook attacks to check if king is in line of fire
+            Bitboard piece_attacks = BitboardUtils::rook_attacks(piece_square, all_pieces);
+            if (BitboardUtils::get_bit(piece_attacks, king_pos)) {
+                // Calculate Chebyshev distance efficiently
+                int distance = std::max(abs((piece_square >> 3) - king_rank), 
+                                    abs((piece_square & 7) - king_file));
+                
+                if (distance <= MAX_LINE_DISTANCE) {
+                    // Consolidated penalty calculation
+                    int penalty = LINE_OF_FIRE_PENALTY;
+                    if (king_rank == expected_rank) {
+                        penalty += BACK_RANK_LINE_PENALTY;
+                    }
+                    if (distance <= CLOSE_DISTANCE_THRESHOLD) {
+                        penalty += CLOSE_DISTANCE_PENALTY;
+                    }
+                    score -= penalty;
+                }
+            }
+        }
+        
+        // Check bishop/queen diagonal line of fire threats
+        temp_diagonal = diagonal_attackers;
+        while (temp_diagonal) {
+            int piece_square = BitboardUtils::pop_lsb(temp_diagonal);
+            
+            // Use bishop attacks to check if king is in line of fire
+            Bitboard piece_attacks = BitboardUtils::bishop_attacks(piece_square, all_pieces);
+            if (BitboardUtils::get_bit(piece_attacks, king_pos)) {
+                // Calculate Chebyshev distance for diagonals
+                int distance = std::max(abs((piece_square >> 3) - king_rank), 
+                                    abs((piece_square & 7) - king_file));
+                
+                if (distance <= MAX_LINE_DISTANCE) {
+                    // Consolidated diagonal penalty calculation
+                    int penalty = DIAGONAL_LINE_PENALTY + (distance <= CLOSE_DISTANCE_THRESHOLD ? DIAGONAL_CLOSE_PENALTY : 0);
+                    score -= penalty;
+                }
+            }
+        }
+    }
+    
+    // === PART 3: BACK RANK ESCAPE SQUARE ANALYSIS ===
+    
+    if (king_rank == expected_rank) {
+        Bitboard own_pieces = board.get_color_bitboard(color);
+        
+        // Create escape square mask in front of king
+        int escape_rank = (color == Board::WHITE) ? 1 : 6;
+        
+        Bitboard escape_mask = 0ULL;
+        for (int file_offset = -1; file_offset <= 1; ++file_offset) {
+            int escape_file = king_file + file_offset;
+            if (escape_file >= 0 && escape_file <= 7) {
+                int escape_square = (escape_rank << 3) | escape_file;
+                escape_mask |= (1ULL << escape_square);
+            }
+        }
+        
+        // Count blocked escape squares using popcount
+        Bitboard blocked_escape_mask = escape_mask & own_pieces;
+        int blocked_escape_squares = BitboardUtils::popcount(blocked_escape_mask);
+        
+        // Penalty increases with more blocked squares
+        if (blocked_escape_squares >= MIN_BLOCKED_ESCAPE_SQUARES) {
+            score -= EvalConstants::BACK_RANK_WEAKNESS_PENALTY;
+            
+            // Check if there are enemy major pieces on back rank using bitboard masking
+            Bitboard back_rank_mask = 0xFFULL << (expected_rank * 8);
+            Bitboard back_rank_attackers = (enemy_rooks | enemy_queens) & back_rank_mask;
+            
+            if (back_rank_attackers) {
+                score -= EvalConstants::BACK_RANK_WEAKNESS_PENALTY / 2;
+            }
+        }
+    }
+    
+    return score;
+}
+
+// III. GAME PHASE ADJUSTMENTS
+
+// IV. DYNAMIC CONSIDERATIONS
+
+// Evaluate potential for future attacks
 // Mobility evaluation
 int Evaluation::evaluate_mobility(const Board& board) const {
     return evaluate_mobility_for_color(board, Board::WHITE) -

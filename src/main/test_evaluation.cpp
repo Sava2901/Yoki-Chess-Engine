@@ -807,54 +807,83 @@ void test_pawn_structure_detailed() {
 void print_king_safety_breakdown(const Board& board, const Evaluation& eval) {
     std::cout << "  King Safety Component Breakdown:" << std::endl;
     
+    // I. STRUCTURAL SAFETY (Static Factors)
     // White king safety components
-    int white_exposure = eval.evaluate_king_exposure(board, Board::WHITE);
-    int white_attackers = eval.evaluate_king_attackers(board, Board::WHITE);
-    int white_tropism = eval.evaluate_king_tropism(board, Board::WHITE);
-    int white_shield = eval.evaluate_pawn_shield(board, Board::WHITE);
-    int white_castling = eval.evaluate_castling_safety(board, Board::WHITE);
-    int white_backrank = eval.evaluate_back_rank_safety(board, Board::WHITE);
-    int white_escape = eval.evaluate_king_escape_squares(board, Board::WHITE);
-    int white_threats = eval.evaluate_tactical_threats_to_king(board, Board::WHITE);
+    int white_pawn_shield = eval.evaluate_pawn_shield(board, Board::WHITE);
+    int white_open_files = eval.evaluate_open_files_near_king(board, Board::WHITE);
+    int white_position = eval.evaluate_king_position_safety(board, Board::WHITE);
+    int white_pawn_storms = eval.evaluate_pawn_storms(board, Board::WHITE);
+    int white_piece_cover = eval.evaluate_piece_cover(board, Board::WHITE);
+    
+    // II. THREAT EVALUATION (Dynamic Factors)
+    int white_attacking_pieces = eval.evaluate_attacking_pieces_nearby(board, Board::WHITE);
+    int white_mobility_escape = eval.evaluate_king_mobility_and_escape(board, Board::WHITE);
+    int white_tactical_threats = eval.evaluate_tactical_threats_to_king(board, Board::WHITE);
+    int white_attack_maps = eval.evaluate_attack_maps_pressure_zones(board, Board::WHITE);
+    
+    // III. GAME PHASE ADJUSTMENTS
+    // (No specific functions for this category - handled within other evaluations)
+    
+    // IV. DYNAMIC CONSIDERATIONS
     
     // Black king safety components
-    int black_exposure = eval.evaluate_king_exposure(board, Board::BLACK);
-    int black_attackers = eval.evaluate_king_attackers(board, Board::BLACK);
-    int black_tropism = eval.evaluate_king_tropism(board, Board::BLACK);
-    int black_shield = eval.evaluate_pawn_shield(board, Board::BLACK);
-    int black_castling = eval.evaluate_castling_safety(board, Board::BLACK);
-    int black_backrank = eval.evaluate_back_rank_safety(board, Board::BLACK);
-    int black_escape = eval.evaluate_king_escape_squares(board, Board::BLACK);
-    int black_threats = eval.evaluate_tactical_threats_to_king(board, Board::BLACK);
-
-    std::cout << "    Black King Components:" << std::endl;
-    std::cout << "      Exposure:      " << std::setw(6) << black_exposure << std::endl;
-    std::cout << "      Attackers:     " << std::setw(6) << black_attackers << std::endl;
-    std::cout << "      Tropism:       " << std::setw(6) << black_tropism << std::endl;
-    std::cout << "      Pawn Shield:   " << std::setw(6) << black_shield << std::endl;
-    std::cout << "      Castling:      " << std::setw(6) << black_castling << std::endl;
-    std::cout << "      Back Rank:     " << std::setw(6) << black_backrank << std::endl;
-    std::cout << "      Escape Squares:" << std::setw(6) << black_escape << std::endl;
-    std::cout << "      Threats:       " << std::setw(6) << black_threats << std::endl;
-
-    std::cout << "    White King Components:" << std::endl;
-    std::cout << "      Exposure:      " << std::setw(6) << white_exposure << std::endl;
-    std::cout << "      Attackers:     " << std::setw(6) << white_attackers << std::endl;
-    std::cout << "      Tropism:       " << std::setw(6) << white_tropism << std::endl;
-    std::cout << "      Pawn Shield:   " << std::setw(6) << white_shield << std::endl;
-    std::cout << "      Castling:      " << std::setw(6) << white_castling << std::endl;
-    std::cout << "      Back Rank:     " << std::setw(6) << white_backrank << std::endl;
-    std::cout << "      Escape Squares:" << std::setw(6) << white_escape << std::endl;
-    std::cout << "      Threats:       " << std::setw(6) << white_threats << std::endl;
-
-    int white_total = white_exposure + white_attackers + white_tropism + white_shield + 
-                     white_castling + white_backrank + white_escape + white_threats;
-    int black_total = black_exposure + black_attackers + black_tropism + black_shield + 
-                     black_castling + black_backrank + black_escape + black_threats;
+    int black_pawn_shield = eval.evaluate_pawn_shield(board, Board::BLACK);
+    int black_open_files = eval.evaluate_open_files_near_king(board, Board::BLACK);
+    int black_position = eval.evaluate_king_position_safety(board, Board::BLACK);
+    int black_pawn_storms = eval.evaluate_pawn_storms(board, Board::BLACK);
+    int black_piece_cover = eval.evaluate_piece_cover(board, Board::BLACK);
     
-    std::cout << "    White Total:   " << std::setw(6) << white_total << std::endl;
-    std::cout << "    Black Total:   " << std::setw(6) << black_total << std::endl;
-    std::cout << "    Net Score:     " << std::setw(6) << (white_total - black_total) << std::endl;
+    int black_attacking_pieces = eval.evaluate_attacking_pieces_nearby(board, Board::BLACK);
+    int black_mobility_escape = eval.evaluate_king_mobility_and_escape(board, Board::BLACK);
+    int black_tactical_threats = eval.evaluate_tactical_threats_to_king(board, Board::BLACK);
+    int black_attack_maps = eval.evaluate_attack_maps_pressure_zones(board, Board::BLACK);
+    
+    
+
+    // Side-by-side comparison format
+    std::cout << "    " << std::left << std::setw(40) << "WHITE KING COMPONENTS" << "BLACK KING COMPONENTS" << std::endl;
+    std::cout << "    " << std::string(80, '=') << std::endl;
+    
+    std::cout << "    I. STRUCTURAL SAFETY (Static Factors):" << std::endl;
+    std::cout << "    " << std::left << std::setw(32) << "  Pawn Shield:" << std::right << std::setw(6) << white_pawn_shield
+              << "    " << std::left << std::setw(32) << "  Pawn Shield:" << std::right << std::setw(6) << black_pawn_shield << std::endl;
+    std::cout << "    " << std::left << std::setw(32) << "  Open Files Near King:" << std::right << std::setw(6) << white_open_files 
+              << "    " << std::left << std::setw(32) << "  Open Files Near King:" << std::right << std::setw(6) << black_open_files << std::endl;
+    std::cout << "    " << std::left << std::setw(32) << "  King Position Safety:" << std::right << std::setw(6) << white_position 
+              << "    " << std::left << std::setw(32) << "  King Position Safety:" << std::right << std::setw(6) << black_position << std::endl;
+    std::cout << "    " << std::left << std::setw(32) << "  Pawn Storms:" << std::right << std::setw(6) << white_pawn_storms 
+              << "    " << std::left << std::setw(32) << "  Pawn Storms:" << std::right << std::setw(6) << black_pawn_storms << std::endl;
+    std::cout << "    " << std::left << std::setw(32) << "  Piece Cover:" << std::right << std::setw(6) << white_piece_cover 
+              << "    " << std::left << std::setw(32) << "  Piece Cover:" << std::right << std::setw(6) << black_piece_cover << std::endl;
+    
+    std::cout << "    II. THREAT EVALUATION (Dynamic Factors):" << std::endl;
+    std::cout << "    " << std::left << std::setw(32) << "  Attacking Pieces Nearby:" << std::right << std::setw(6) << white_attacking_pieces 
+              << "    " << std::left << std::setw(32) << "  Attacking Pieces Nearby:" << std::right << std::setw(6) << black_attacking_pieces << std::endl;
+    std::cout << "    " << std::left << std::setw(32) << "  King Mobility and Escape:" << std::right << std::setw(6) << white_mobility_escape 
+              << "    " << std::left << std::setw(32) << "  King Mobility and Escape:" << std::right << std::setw(6) << black_mobility_escape << std::endl;
+    std::cout << "    " << std::left << std::setw(32) << "  Tactical Threats Comp.:" << std::right << std::setw(6) << white_tactical_threats 
+              << "    " << std::left << std::setw(32) << "  Tactical Threats Comp.:" << std::right << std::setw(6) << black_tactical_threats << std::endl;
+    std::cout << "    " << std::left << std::setw(32) << "  Attack Maps Pressure:" << std::right << std::setw(6) << white_attack_maps
+              << "    " << std::left << std::setw(32) << "  Attack Maps Pressure:" << std::right << std::setw(6) << black_attack_maps << std::endl;
+    
+    std::cout << "    III. DYNAMIC CONSIDERATIONS:" << std::endl;
+    std::cout << "    " << std::left << std::setw(32) << "  (None currently)" << std::right << std::setw(6) << "0"
+              << "    " << std::left << std::setw(32) << "  (None currently)" << std::right << std::setw(6) << "0" << std::endl;
+    
+    
+
+    int white_total = white_pawn_shield + white_open_files + white_position + white_pawn_storms + white_piece_cover +
+                     white_attacking_pieces + white_mobility_escape + white_tactical_threats +
+                     white_attack_maps;
+    int black_total = black_pawn_shield + black_open_files + black_position + black_pawn_storms + black_piece_cover +
+                     black_attacking_pieces + black_mobility_escape + black_tactical_threats +
+                     black_attack_maps;
+    
+    std::cout << "    " << std::string(80, '-') << std::endl;
+    std::cout << "    " << std::left << std::setw(32) << "  TOTAL:" << std::right << std::setw(6) << white_total 
+              << "    " << std::left << std::setw(32) << "  TOTAL:" << std::right << std::setw(6) << black_total << std::endl;
+    std::cout << "    " << std::string(80, '=') << std::endl;
+    std::cout << "    NET KING SAFETY SCORE (White - Black): " << std::setw(6) << (white_total - black_total) << std::endl;
 }
 
 void test_king_safety_detailed() {
@@ -1301,7 +1330,7 @@ void test_move_evaluations() {
 
             // Evaluate the position after the move
             int move_eval = eval.evaluate(board);  // Negate because it's opponent's turn
-            move_evaluations.push_back({move, move_eval});
+            move_evaluations.emplace_back(move, move_eval);
             
             // Undo the move
             board.undo_move(undo_data);
