@@ -7,6 +7,7 @@
 
 // TODO: Add relative piece values for different positions and future prospects
 // TODO: Check if there is a need for precomputed bitboard masks: Isolated Pawn Detection, Backward Pawns, Outposts,
+// TODO: Get rid of all the out of bounds checks that maybe are slowing down the evaluation
 // King Shield / Pawn Storm, Rook Open/Semi-Open Files, Pawn Spans and Front Spans, Pawn Spans and Front Spans, Center Control
 
 // Static member definitions
@@ -14,27 +15,45 @@ Bitboard Evaluation::isolated_pawn_masks[64];
 Bitboard Evaluation::file_masks[8];
 static bool pawn_masks_initialized = false;
 
-// Branchless abs for 32-bit int 
+/**
+ * @brief Branchless absolute value for 32-bit integers
+ * @param x The integer to get absolute value of
+ * @return Absolute value of x
+ */
 static int abs_int(int x) { 
     int mask = x >> 31;         // all 1s if x < 0, else all 0s 
     return (x + mask) ^ mask;   // flip bits and add 1 if negative 
 } 
 
-// Branchless max for 32-bit int 
+/**
+ * @brief Branchless maximum for 32-bit integers
+ * @param a First integer
+ * @param b Second integer
+ * @return Maximum of a and b
+ */
 static int max_int(int a, int b) { 
     int diff = a - b; 
     int mask = diff >> 31;      // all 1s if diff < 0, else 0 
     return a - (diff & mask);   // if a < b, subtract diff else subtract 0 
 }
 
-// Branchless min for 32-bit int 
+/**
+ * @brief Branchless minimum for 32-bit integers
+ * @param a First integer
+ * @param b Second integer
+ * @return Minimum of a and b
+ */
 static int min_int(int a, int b) { 
     int diff = a - b; 
     int mask = diff >> 31;      // all 1s if diff < 0, else 0 
     return b + (diff & mask);   // if a < b, add diff else add 0 
 }
 
-// Helper function to get file mask
+/**
+ * @brief Gets the bitboard mask for a specific file
+ * @param file The file number (0-7 for files A-H)
+ * @return Bitboard mask for the specified file, or 0 if invalid
+ */
 static Bitboard get_file_mask(int file) {
     static const Bitboard file_masks[8] = {
         FILE_A, FILE_B, FILE_C, FILE_D, FILE_E, FILE_F, FILE_G, FILE_H
@@ -42,7 +61,6 @@ static Bitboard get_file_mask(int file) {
     return (file >= 0 && file < 8) ? file_masks[file] : 0ULL;
 }
 
-// Zobrist key initialization
 ZobristKeys::ZobristKeys() {
     initialize();
 }
@@ -74,15 +92,28 @@ void ZobristKeys::initialize() {
     side_to_move_key = dist(rng);
 }
 
-// Constructor
 Evaluation::Evaluation() {
     pawn_hash_table.reserve(65536); // Reserve space for pawn hash table
     init_pawn_masks(); // Initialize other pawn masks
 }
 
 // TODO: Tune constants and piece-square tables for better representation of piece values and positions
-// Main evaluation function
 int Evaluation::evaluate(const Board& board) {
+    // Null pointer validation - check if board is in valid state
+    try {
+        // Basic validation - ensure board has kings
+        Bitboard white_king = board.get_piece_bitboard(Board::KING, Board::WHITE);
+        Bitboard black_king = board.get_piece_bitboard(Board::KING, Board::BLACK);
+        
+        if (!white_king || !black_king) {
+            // Invalid position - return neutral score
+            return 0;
+        }
+    } catch (...) {
+        // Handle any exceptions from board access
+        return 0;
+    }
+    
     int score = 0;
     
     // Get game phase
@@ -127,7 +158,6 @@ int Evaluation::evaluate(const Board& board) {
     return score;
 }
 
-// Incremental evaluation
 int Evaluation::evaluate_incremental(const Board& board, const Move& move, const BitboardMoveUndoData& undo_data) {
     // Update incremental data based on the move
     update_incremental_eval(board, move, undo_data);
@@ -175,25 +205,69 @@ int Evaluation::evaluate_incremental(const Board& board, const Move& move, const
     return total_score;
 }
 
-// Initialize incremental evaluation
 void Evaluation::initialize_incremental_eval(const Board& board) {
-    incremental_data.material_balance = evaluate_material(board);
-    incremental_data.positional_balance = evaluate_piece_square_tables(board);
-    incremental_data.pawn_structure_score = evaluate_pawn_structure(board);
-    incremental_data.king_safety_score = evaluate_king_safety(board);
-    incremental_data.mobility_score = evaluate_mobility(board);
-    incremental_data.game_phase = get_game_phase(board);
-    incremental_data.phase_value = get_phase_value(board);
+    // Null pointer validation
+    try {
+        // Ensure board has valid kings before initializing
+        Bitboard white_king = board.get_piece_bitboard(Board::KING, Board::WHITE);
+        Bitboard black_king = board.get_piece_bitboard(Board::KING, Board::BLACK);
+        
+        if (!white_king || !black_king) {
+            // Initialize with neutral values for invalid position
+            incremental_data.material_balance = 0;
+            incremental_data.positional_balance = 0;
+            incremental_data.pawn_structure_score = 0;
+            incremental_data.king_safety_score = 0;
+            incremental_data.mobility_score = 0;
+            incremental_data.game_phase = MIDDLEGAME;
+            incremental_data.phase_value = 0;
+            return;
+        }
+        
+        incremental_data.material_balance = evaluate_material(board);
+        incremental_data.positional_balance = evaluate_piece_square_tables(board);
+        incremental_data.pawn_structure_score = evaluate_pawn_structure(board);
+        incremental_data.king_safety_score = evaluate_king_safety(board);
+        incremental_data.mobility_score = evaluate_mobility(board);
+        incremental_data.game_phase = get_game_phase(board);
+        incremental_data.phase_value = get_phase_value(board);
+    } catch (...) {
+        // Handle any exceptions during initialization
+        incremental_data.material_balance = 0;
+        incremental_data.positional_balance = 0;
+        incremental_data.pawn_structure_score = 0;
+        incremental_data.king_safety_score = 0;
+        incremental_data.mobility_score = 0;
+        incremental_data.game_phase = MIDDLEGAME;
+        incremental_data.phase_value = 0;
+    }
 }
 
 // Update incremental evaluation
 void Evaluation::update_incremental_eval(const Board& board, const Move& move, const BitboardMoveUndoData& undo_data) {
+    // Bounds checking for move parameters
+    if (move.from_rank < 0 || move.from_rank >= 8 || move.from_file < 0 || move.from_file >= 8 ||
+        move.to_rank < 0 || move.to_rank >= 8 || move.to_file < 0 || move.to_file >= 8) {
+        return; // Invalid move, skip update
+    }
+    
     Board::PieceType piece_type = Board::char_to_piece_type(move.piece);
     Board::Color piece_color = Board::char_to_color(move.piece);
+    
+    // Validate piece type and color
+    if (piece_type < 0 || piece_type >= 6 || piece_color < 0 || piece_color >= 2) {
+        return; // Invalid piece, skip update
+    }
+    
     int side_multiplier = side_sign(piece_color);
     
     int from_square = square_to_index(move.from_rank, move.from_file);
     int to_square = square_to_index(move.to_rank, move.to_file);
+    
+    // Additional bounds checking for calculated squares
+    if (from_square < 0 || from_square >= 64 || to_square < 0 || to_square >= 64) {
+        return; // Invalid squares, skip update
+    }
     
     // Update material balance if there was a capture
     if (move.captured_piece != '.') {
@@ -330,12 +404,29 @@ These should trigger updates to those evaluation components, as your code shows.
 
 // Undo incremental evaluation
 void Evaluation::undo_incremental_eval(const Board& board, const Move& move, const BitboardMoveUndoData& undo_data) {
+    // Bounds checking for move parameters
+    if (move.from_rank < 0 || move.from_rank >= 8 || move.from_file < 0 || move.from_file >= 8 ||
+        move.to_rank < 0 || move.to_rank >= 8 || move.to_file < 0 || move.to_file >= 8) {
+        return; // Invalid move, skip undo
+    }
+    
     Board::PieceType piece_type = Board::char_to_piece_type(move.piece);
     Board::Color piece_color = Board::char_to_color(move.piece);
+    
+    // Validate piece type and color
+    if (piece_type < 0 || piece_type >= 6 || piece_color < 0 || piece_color >= 2) {
+        return; // Invalid piece, skip undo
+    }
+    
     int side_multiplier = side_sign(piece_color);
     
     int from_square = square_to_index(move.from_rank, move.from_file);
     int to_square = square_to_index(move.to_rank, move.to_file);
+    
+    // Additional bounds checking for calculated squares
+    if (from_square < 0 || from_square >= 64 || to_square < 0 || to_square >= 64) {
+        return; // Invalid squares, skip undo
+    }
     
     // Undo material balance changes
     if (move.captured_piece != '.') {
@@ -521,6 +612,11 @@ int Evaluation::evaluate_piece_square_tables(const Board& board) const {
 
 // Get piece-square value for a specific piece
 int Evaluation::get_piece_square_value(Board::PieceType piece_type, Board::Color color, int square, GamePhase phase) const {
+    // Bounds checking
+    if (square < 0 || square >= 64 || piece_type < 0 || piece_type >= 6 || color < 0 || color >= 2) {
+        return 0;
+    }
+    
     // Convert GamePhase to array index
     int phase_index;
     switch (phase) {
@@ -530,8 +626,13 @@ int Evaluation::get_piece_square_value(Board::PieceType piece_type, Board::Color
         default: phase_index = 1; // Default to middlegame
     }
     
-    return color == Board::WHITE ? PST[piece_type][phase_index][mirror_square(square)] 
-                                 : PST[piece_type][phase_index][(square)];
+    int mirrored_square = mirror_square(square);
+    if (mirrored_square < 0 || mirrored_square >= 64) {
+        return 0;
+    }
+    
+    return color == Board::WHITE ? PST[piece_type][phase_index][mirrored_square] 
+                                 : PST[piece_type][phase_index][square];
 }
 
 // Pawn structure evaluation
@@ -665,7 +766,6 @@ int Evaluation::evaluate_king_safety_for_color(const Board& board, Board::Color 
 
 // I. STRUCTURAL SAFETY (Static Factors)
 // TODO: Test the pawn shield evaluation function with various board states
-// Pawn shield evaluation with detailed analysis
 int Evaluation::evaluate_pawn_shield(const Board& board, Board::Color color) const {
     int score = 0;
     int king_pos = board.get_king_position(color);
@@ -815,7 +915,6 @@ int Evaluation::evaluate_pawn_shield(const Board& board, Board::Color color) con
     return score;
 }
 
-// Evaluate open and semi-open files near the king
 int Evaluation::evaluate_open_files_near_king(const Board& board, Board::Color color) const {
     int score = 0;
     int king_pos = board.get_king_position(color);
@@ -860,7 +959,6 @@ int Evaluation::evaluate_open_files_near_king(const Board& board, Board::Color c
     return score;
 }
 
-// Evaluate king position safety (castled vs uncastled, edge vs center)
 int Evaluation::evaluate_king_position_safety(const Board& board, Board::Color color) const {
     int score = 0;
     int king_pos = board.get_king_position(color);
@@ -905,7 +1003,6 @@ int Evaluation::evaluate_king_position_safety(const Board& board, Board::Color c
     return score;
 }
 
-// Evaluate pawn storms (friendly or enemy pawns advancing toward king)
 int Evaluation::evaluate_pawn_storms(const Board& board, Board::Color color) const {
     int score = 0;
     int king_pos = board.get_king_position(color);
@@ -960,7 +1057,6 @@ int Evaluation::evaluate_pawn_storms(const Board& board, Board::Color color) con
     return score;
 }
 
-// Evaluate piece cover (friendly minor pieces near king acting as defenders)
 int Evaluation::evaluate_piece_cover(const Board& board, Board::Color color) const {
     int score = 0;
     const int king_pos = board.get_king_position(color);
@@ -1008,7 +1104,6 @@ int Evaluation::evaluate_piece_cover(const Board& board, Board::Color color) con
 
 // II. THREAT EVALUATION (Dynamic Factors)
 
-// Evaluate attacking pieces nearby with weight system
 int Evaluation::evaluate_attacking_pieces_nearby(const Board& board, Board::Color color) const {
     int score = 0;
     int king_pos = board.get_king_position(color);
@@ -1079,7 +1174,15 @@ int Evaluation::evaluate_attacking_pieces_nearby(const Board& board, Board::Colo
     return score;
 }
 
-// Evaluate king mobility and escape squares
+/**
+ * @brief Evaluates king mobility and available escape squares
+ * @param board The board position to evaluate
+ * @param color The color whose king mobility to evaluate
+ * @return King safety score based on mobility and escape options
+ * 
+ * Analyzes adjacent squares for escape options, considering blocked,
+ * attacked, and safe squares. Applies penalties for trapped kings.
+ */
 int Evaluation::evaluate_king_mobility_and_escape(const Board& board, Board::Color color) const {
     int score = 0;
     int king_pos = board.get_king_position(color);
@@ -1137,7 +1240,6 @@ int Evaluation::evaluate_king_mobility_and_escape(const Board& board, Board::Col
     return score;
 }
 
-// Tactical threats evaluation
 int Evaluation::evaluate_tactical_threats_to_king(const Board& board, Board::Color color) const {
     int score = 0;
 
@@ -1147,7 +1249,6 @@ int Evaluation::evaluate_tactical_threats_to_king(const Board& board, Board::Col
     return score;
 }
 
-// Helper function for pins to the king
 int Evaluation::evaluate_pins(const Board& board, Board::Color color) const {
     int score = 0;
     int king_pos = board.get_king_position(color);
@@ -1226,8 +1327,6 @@ int Evaluation::evaluate_pins(const Board& board, Board::Color color) const {
     return score;
 }
 
-// Evaluate attack maps and pressure zones (optimized with bitboard operations)
-// Comprehensive king safety evaluation combining attack maps, pressure zones, and line of fire threats
 int Evaluation::evaluate_attack_maps_pressure_zones(const Board& board, Board::Color color) const {
     // Constants for evaluation
     static constexpr int LINE_OF_FIRE_PENALTY = 12;
@@ -1280,7 +1379,11 @@ int Evaluation::evaluate_attack_maps_pressure_zones(const Board& board, Board::C
     
     // Enemy pawn attacks
     if (enemy_pawns) {
-        enemy_attack_map |= BitboardUtils::pawn_attacks(enemy_pawns, enemy_color);
+        Bitboard temp_pawns = enemy_pawns;
+        while (temp_pawns) {
+            int pawn_square = BitboardUtils::pop_lsb(temp_pawns);
+            enemy_attack_map |= BitboardUtils::pawn_attacks(pawn_square, enemy_color == Board::WHITE);
+        }
     }
     
     // Enemy knight attacks
@@ -1320,7 +1423,11 @@ int Evaluation::evaluate_attack_maps_pressure_zones(const Board& board, Board::C
     
     // Our pawn defenses
     if (our_pawns) {
-        our_defense_map |= BitboardUtils::pawn_attacks(our_pawns, color);
+        Bitboard temp_pawns = our_pawns;
+        while (temp_pawns) {
+            int pawn_square = BitboardUtils::pop_lsb(temp_pawns);
+            our_defense_map |= BitboardUtils::pawn_attacks(pawn_square, color == Board::WHITE);
+        }
     }
     
     // Our knight defenses
@@ -1465,13 +1572,11 @@ int Evaluation::evaluate_attack_maps_pressure_zones(const Board& board, Board::C
 // IV. DYNAMIC CONSIDERATIONS
 
 // Evaluate potential for future attacks
-// Mobility evaluation
 int Evaluation::evaluate_mobility(const Board& board) const {
     return evaluate_mobility_for_color(board, Board::WHITE) -
            evaluate_mobility_for_color(board, Board::BLACK);
 }
 
-// Mobility evaluation for one color
 int Evaluation::evaluate_mobility_for_color(const Board& board, Board::Color color) const {
     int score = 0;
 
@@ -1524,7 +1629,6 @@ int Evaluation::evaluate_mobility_for_color(const Board& board, Board::Color col
 }
 
 
-// Piece coordination evaluation
 int Evaluation::evaluate_piece_coordination(const Board& board) const {
     return evaluate_piece_coordination_for_color(board, Board::WHITE) - 
            evaluate_piece_coordination_for_color(board, Board::BLACK);
@@ -1601,7 +1705,6 @@ int Evaluation::evaluate_piece_coordination_for_color(const Board& board, Board:
     return score;
 }
 
-// Endgame factors evaluation
 int Evaluation::evaluate_endgame_factors(const Board& board) const {
     return evaluate_endgame_factors_for_color(board, Board::WHITE) - 
            evaluate_endgame_factors_for_color(board, Board::BLACK);
@@ -1664,7 +1767,14 @@ int Evaluation::evaluate_endgame_factors_for_color(const Board& board, Board::Co
     return score;
 }
 
-// Development evaluation
+/**
+ * @brief Evaluates piece development for both colors
+ * @param board The board position to evaluate
+ * @return Development score difference (white - black)
+ * 
+ * Analyzes how well pieces are developed from their starting positions
+ * and penalizes premature queen development.
+ */
 int Evaluation::evaluate_development(const Board& board) const {
     int score = 0;
     
@@ -1677,6 +1787,15 @@ int Evaluation::evaluate_development(const Board& board) const {
     return score;
 }
 
+/**
+ * @brief Evaluates piece development for a specific color
+ * @param board The board position to evaluate
+ * @param color The color whose development to evaluate
+ * @return Development score for the specified color
+ * 
+ * Checks for developed knights and bishops, penalizes early queen
+ * development, and evaluates development-limiting pawn moves.
+ */
 int Evaluation::evaluate_development_for_color(const Board& board, Board::Color color) const {
     int score = 0;
     
@@ -1718,7 +1837,6 @@ int Evaluation::evaluate_development_for_color(const Board& board, Board::Color 
     return score;
 }
 
-// Evaluate pawn moves that limit piece development
 int Evaluation::evaluate_development_limiting_pawn_penalties(const Board& board, Board::Color color) const {
     int score = 0;
     int back_rank = (color == Board::WHITE) ? 0 : 7;
@@ -1791,12 +1909,10 @@ int Evaluation::evaluate_development_limiting_pawn_penalties(const Board& board,
     return score;
 }
 
-// Tapered evaluation
 int Evaluation::tapered_eval(int opening_score, int endgame_score, int game_phase) const {
     return (opening_score * game_phase + endgame_score * (256 - game_phase)) / 256;
 }
 
-// Game phase detection
 GamePhase Evaluation::get_game_phase(const Board& board) const {
     int phase_value = get_phase_value(board);
     
@@ -1809,7 +1925,6 @@ GamePhase Evaluation::get_game_phase(const Board& board) const {
     return ENDGAME;
 }
 
-// Get phase value
 int Evaluation::get_phase_value(const Board& board) const {
     int phase_value = 0;
     
@@ -1825,7 +1940,6 @@ int Evaluation::get_phase_value(const Board& board) const {
     return phase_value;
 }
 
-// Utility functions
 void Evaluation::clear_pawn_hash_table() {
     pawn_hash_table.clear();
 }
@@ -1877,8 +1991,12 @@ void Evaluation::print_evaluation_breakdown(const Board& board) {
     std::cout << "============================" << std::endl;
 }
 
-// Static helper functions
-// Initialize passed pawn masks for efficient evaluation
+/**
+ * @brief Initializes passed pawn masks for efficient evaluation
+ * 
+ * Precomputes bitboard masks used to quickly identify passed pawns
+ * for both colors on all squares. Called once during initialization.
+ */
 void Evaluation::init_passed_pawn_masks() {
     if (pawn_masks_initialized) return;
     
@@ -1904,7 +2022,6 @@ void Evaluation::init_passed_pawn_masks() {
     }
 }
 
-// Initialize pawn evaluation masks
 void Evaluation::init_pawn_masks() {
     if (pawn_masks_initialized) return;
     
@@ -1937,18 +2054,33 @@ void Evaluation::init_pawn_masks() {
 }
 
 bool Evaluation::is_passed_pawn(const Board& board, int square, Board::Color color) const {
+    // Bounds checking
+    if (square < 0 || square >= 64 || color < 0 || color >= 2) {
+        return false;
+    }
+    
     Board::Color enemy = (color == Board::WHITE) ? Board::BLACK : Board::WHITE;
     Bitboard enemy_pawns = board.get_piece_bitboard(Board::PAWN, enemy);
     return !(enemy_pawns & passed_pawn_masks[square][color]);
 }
 
 bool Evaluation::is_isolated_pawn(const Board& board, int square, Board::Color color) {
+    // Bounds checking
+    if (square < 0 || square >= 64) {
+        return false;
+    }
+    
     Bitboard own_pawns = board.get_piece_bitboard(Board::PAWN, color);
     // Use precomputed mask to check adjacent files for friendly pawns
     return !(own_pawns & isolated_pawn_masks[square]);
 }
 
 bool Evaluation::is_doubled_pawn(const Board& board, int square, Board::Color color) {
+    // Bounds checking
+    if (square < 0 || square >= 64) {
+        return false;
+    }
+    
     int file = square & 7; // Equivalent to square % 8
     Bitboard own_pawns = board.get_piece_bitboard(Board::PAWN, color);
     
@@ -1960,12 +2092,18 @@ bool Evaluation::is_doubled_pawn(const Board& board, int square, Board::Color co
     return file_pawns != 0;
 }
 
-// Helper function to count attackers to king zone
 int Evaluation::count_attackers_to_king_zone(const Board& board, Board::Color attacking_color, Board::Color king_color) const {
+    // Bounds checking for colors
+    if (attacking_color < 0 || attacking_color >= 2 || king_color < 0 || king_color >= 2) {
+        return 0;
+    }
+    
     Bitboard king = board.get_piece_bitboard(Board::KING, king_color);
     if (!king) return 0;
     
     int king_square = get_lsb(king);
+    if (king_square < 0 || king_square >= 64) return 0;
+    
     int attackers = 0;
     
     // Check each piece type for attacks to king zone
@@ -1986,8 +2124,12 @@ int Evaluation::count_attackers_to_king_zone(const Board& board, Board::Color at
     return attackers;
 }
 
-// Helper function to check if file is open
 bool Evaluation::is_file_open(const Board& board, int file) const {
+    // Bounds checking
+    if (file < 0 || file >= 8) {
+        return false;
+    }
+    
     Bitboard file_mask = get_file_mask(file);
     Bitboard white_pawns = board.get_piece_bitboard(Board::PAWN, Board::WHITE);
     Bitboard black_pawns = board.get_piece_bitboard(Board::PAWN, Board::BLACK);
@@ -1995,16 +2137,24 @@ bool Evaluation::is_file_open(const Board& board, int file) const {
     return !(file_mask & (white_pawns | black_pawns));
 }
 
-// Helper function to check if file is semi-open for a color
 bool Evaluation::is_file_semi_open(const Board& board, int file, Board::Color color) const {
+    // Bounds checking
+    if (file < 0 || file >= 8 || color < 0 || color >= 2) {
+        return false;
+    }
+    
     Bitboard file_mask = get_file_mask(file);
     Bitboard pawns = board.get_piece_bitboard(Board::PAWN, color);
     
     return !(file_mask & pawns);
 }
 
-// Helper function to check if a pawn is backward
 bool Evaluation::is_backward_pawn(const Board& board, int square, Board::Color color) {
+    // Bounds checking
+    if (square < 0 || square >= 64) {
+        return false;
+    }
+    
     int rank = square >> 3; // Equivalent to square / 8
     int file = square & 7;  // Equivalent to square % 8
     
@@ -2053,8 +2203,12 @@ bool Evaluation::is_backward_pawn(const Board& board, int square, Board::Color c
     return !(own_pawns & support_mask);
 }
 
-// Helper function to check if pawns form a chain
 bool Evaluation::is_pawn_chain(const Board& board, int square, Board::Color color) {
+    // Bounds checking
+    if (square < 0 || square >= 64) {
+        return false;
+    }
+    
     int rank = square >> 3; // Equivalent to square / 8
     int file = square & 7;  // Equivalent to square % 8
     
@@ -2083,22 +2237,34 @@ bool Evaluation::is_pawn_chain(const Board& board, int square, Board::Color colo
     return false;
 }
 
-// Helper function to get passed pawn rank bonus
 int Evaluation::get_passed_pawn_rank_bonus(int square, Board::Color color) {
+    // Bounds checking
+    if (square < 0 || square >= 64) {
+        return 0;
+    }
+    
     int rank = square >> 3;
     int relative_rank = (color == Board::WHITE) ? rank : (7 - rank);
     return (EvalConstants::ADVANCED_PASSED_PAWN_BONUS * relative_rank * relative_rank) >> 4;
 }
 
-// Helper function to calculate distance between squares
 int Evaluation::distance_between_squares(int sq1, int sq2) {
+    // Bounds checking
+    if (sq1 < 0 || sq1 >= 64 || sq2 < 0 || sq2 >= 64) {
+        return 0;
+    }
+    
     int rank1 = sq1 >> 3, file1 = sq1 & 7;
     int rank2 = sq2 >> 3, file2 = sq2 & 7;
     
     return max_int(abs_int(rank1 - rank2), abs_int(file1 - file2));
 }
 
-// Helper function to check if a square is in king zone
 bool Evaluation::is_in_king_zone(int square, int king_square) {
+    // Bounds checking
+    if (square < 0 || square >= 64 || king_square < 0 || king_square >= 64) {
+        return false;
+    }
+    
     return distance_between_squares(square, king_square) < 3;
 }

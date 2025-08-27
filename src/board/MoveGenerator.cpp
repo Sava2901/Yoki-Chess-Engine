@@ -244,6 +244,16 @@ void MoveGenerator::generate_pawn_moves(const Board& board, std::vector<Move>& m
     }
 }
 
+/**
+ * @brief Generate knight moves for the current position
+ * 
+ * Generates all knight moves using precomputed attack patterns.
+ * Knights move in an L-shape (2+1 squares).
+ * 
+ * @param board The current board position
+ * @param moves Vector to append generated moves to
+ * @param captures_only If true, only generate capture moves
+ */
 void MoveGenerator::generate_knight_moves(const Board& board, std::vector<Move>& moves, bool captures_only) {
     Board::Color color = board.get_active_color();
     Bitboard knights = board.get_piece_bitboard(Board::KNIGHT, color);
@@ -273,6 +283,16 @@ void MoveGenerator::generate_knight_moves(const Board& board, std::vector<Move>&
     }
 }
 
+/**
+ * @brief Generate bishop moves for the current position
+ * 
+ * Generates diagonal moves using magic bitboards for efficient
+ * sliding piece attack calculation.
+ * 
+ * @param board The current board position
+ * @param moves Vector to append generated moves to
+ * @param captures_only If true, only generate capture moves
+ */
 void MoveGenerator::generate_bishop_moves(const Board& board, std::vector<Move>& moves, bool captures_only) {
     Board::Color color = board.get_active_color();
     Bitboard bishops = board.get_piece_bitboard(Board::BISHOP, color);
@@ -451,6 +471,15 @@ void MoveGenerator::generate_castling_moves(const Board& board, std::vector<Move
     }
 }
 
+/**
+ * @brief Generate en passant capture moves for the current position
+ * 
+ * Generates en passant captures if an opponent pawn just moved
+ * two squares and is adjacent to one of our pawns.
+ * 
+ * @param board The current board position
+ * @param moves Vector to append generated moves to
+ */
 void MoveGenerator::generate_en_passant_moves(const Board& board, std::vector<Move>& moves) {
     if (board.get_en_passant_file() == -1) return;
 
@@ -782,12 +811,31 @@ void MoveGenerator::order_moves(std::vector<Move>& moves, const Board& board) {
     });
 }
 
+/**
+ * @brief Order capture moves by MVV-LVA
+ * 
+ * Sorts capture moves using Most Valuable Victim - Least Valuable
+ * Attacker heuristic for optimal search ordering.
+ * 
+ * @param moves Vector of capture moves to order (modified in place)
+ * @param board The current board position for move evaluation
+ */
 void MoveGenerator::order_captures(std::vector<Move>& moves, const Board& board) {
     std::sort(moves.begin(), moves.end(), [&](const Move& a, const Move& b) {
         return get_capture_score(a, board) > get_capture_score(b, board);
     });
 }
 
+/**
+ * @brief Calculate a score for move ordering
+ * 
+ * Assigns a numerical score to a move for ordering purposes.
+ * Higher scores indicate moves that should be searched first.
+ * 
+ * @param move The move to score
+ * @param board The current board position
+ * @return Numerical score for the move
+ */
 int MoveGenerator::get_move_score(const Move& move, const Board& board) {
     int score = 0;
     
@@ -814,6 +862,16 @@ int MoveGenerator::get_move_score(const Move& move, const Board& board) {
     return score;
 }
 
+/**
+ * @brief Calculate MVV-LVA score for capture moves
+ * 
+ * Calculates the Most Valuable Victim - Least Valuable Attacker
+ * score for ordering capture moves in search.
+ * 
+ * @param move The capture move to score
+ * @param board The current board position
+ * @return MVV-LVA score for the capture
+ */
 int MoveGenerator::get_capture_score(const Move& move, const Board& board) {
     if (move.captured_piece == '.') return 0;
     
@@ -1004,8 +1062,6 @@ bool MoveGenerator::are_squares_aligned(int sq1, int sq2, int sq3) {
            (std::abs(rank_diff2) == std::abs(file_diff2));
 }
 
-// Magic bitboard attack generation functions
-// These functions delegate to BitboardUtils which handles PEXT optimization internally
 Bitboard MoveGenerator::get_bishop_attacks(int square, Bitboard occupancy) {
     return BitboardUtils::bishop_attacks(square, occupancy);
 }

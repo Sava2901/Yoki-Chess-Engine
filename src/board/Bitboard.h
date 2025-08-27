@@ -64,42 +64,88 @@ enum Square {
 
 class BitboardUtils {
 public:
-    // Initialize magic bitboard tables
+    /**
+     * Initialize magic bitboard tables and precomputed attack tables.
+     * Must be called once before using any attack generation functions.
+     */
     static void init();
     
-    // Basic bitboard operations
+    // ========== Basic Bitboard Operations ==========
+    
+    /**
+     * Check if a specific bit is set in the bitboard.
+     * @param bb The bitboard to check
+     * @param square The square index (0-63) to check
+     * @return true if the bit at the given square is set, false otherwise
+     */
     static bool get_bit(Bitboard bb, int square) {
         return bb & (1ULL << square);
     }
     
+    /**
+     * Set a specific bit in the bitboard.
+     * @param bb Reference to the bitboard to modify
+     * @param square The square index (0-63) to set
+     */
     static void set_bit(Bitboard& bb, int square) {
         bb |= (1ULL << square);
     }
     
+    /**
+     * Clear a specific bit in the bitboard.
+     * @param bb Reference to the bitboard to modify
+     * @param square The square index (0-63) to clear
+     */
     static void clear_bit(Bitboard& bb, int square) {
         bb &= ~(1ULL << square);
     }
     
+    /**
+     * Toggle a specific bit in the bitboard.
+     * @param bb Reference to the bitboard to modify
+     * @param square The square index (0-63) to toggle
+     */
     static void toggle_bit(Bitboard& bb, int square) {
         bb ^= (1ULL << square);
     }
     
-    // Population count (number of set bits)
+    // ========== Bit Manipulation Functions ==========
+    
+    /**
+     * Count the number of set bits in the bitboard (population count).
+     * Uses hardware POPCNT instruction when available for optimal performance.
+     * @param bb The bitboard to count
+     * @return The number of set bits (0-64)
+     */
     static int popcount(Bitboard bb) {
         return count_bits(bb);
     }
     
-    // Find first set bit (least significant bit)
+    /**
+     * Find the index of the least significant bit (rightmost set bit).
+     * Uses hardware BMI instruction when available for optimal performance.
+     * @param bb The bitboard to search (must not be zero)
+     * @return The square index (0-63) of the least significant bit
+     */
     static int lsb(Bitboard bb) {
         return get_lsb(bb);
     }
     
-    // Find most significant bit
+    /**
+     * Find the index of the most significant bit (leftmost set bit).
+     * @param bb The bitboard to search (must not be zero)
+     * @return The square index (0-63) of the most significant bit
+     */
     static int msb(Bitboard bb) {
         return 63 - __builtin_clzll(bb);
     }
     
-    // Remove least significant bit
+    /**
+     * Remove and return the least significant bit from the bitboard.
+     * Uses hardware BMI2 instruction when available for optimal performance.
+     * @param bb Reference to the bitboard to modify
+     * @return The square index (0-63) of the removed bit
+     */
     static Bitboard pop_lsb(Bitboard& bb) {
 #ifdef __BMI2__
         int square = get_lsb(bb);
@@ -112,49 +158,189 @@ public:
 #endif
     }
     
-    // Convert square coordinates to square index
+    // ========== Coordinate Conversion Functions ==========
+    
+    /**
+     * Convert rank and file coordinates to a square index.
+     * @param rank The rank (0-7, where 0 is rank 1)
+     * @param file The file (0-7, where 0 is file A)
+     * @return The square index (0-63)
+     */
     static int square_index(int rank, int file) {
         return rank * 8 + file;
     }
     
-    // Convert square index to rank/file
+    /**
+     * Extract the rank from a square index.
+     * @param square The square index (0-63)
+     * @return The rank (0-7, where 0 is rank 1)
+     */
     static int get_rank(int square) {
         return square / 8;
     }
     
+    /**
+     * Extract the file from a square index.
+     * @param square The square index (0-63)
+     * @return The file (0-7, where 0 is file A)
+     */
     static int get_file(int square) {
         return square % 8;
     }
     
-    // Sliding piece attacks
+    // ========== Attack Generation Functions ==========
+    
+    /**
+     * Generate rook attack bitboard for a given square and occupancy.
+     * Uses magic bitboards for fast lookup.
+     * @param square The square index (0-63) where the rook is located
+     * @param occupancy Bitboard representing all occupied squares
+     * @return Bitboard of squares the rook can attack
+     */
     static Bitboard rook_attacks(int square, Bitboard occupancy);
+    
+    /**
+     * Generate bishop attack bitboard for a given square and occupancy.
+     * Uses magic bitboards for fast lookup.
+     * @param square The square index (0-63) where the bishop is located
+     * @param occupancy Bitboard representing all occupied squares
+     * @return Bitboard of squares the bishop can attack
+     */
     static Bitboard bishop_attacks(int square, Bitboard occupancy);
+    
+    /**
+     * Generate queen attack bitboard for a given square and occupancy.
+     * Combines rook and bishop attacks.
+     * @param square The square index (0-63) where the queen is located
+     * @param occupancy Bitboard representing all occupied squares
+     * @return Bitboard of squares the queen can attack
+     */
     static Bitboard queen_attacks(int square, Bitboard occupancy);
     
     // PEXT bitboard attacks (BMI2 optimized)
     #ifdef __BMI2__
+    /**
+     * Generate rook attacks using BMI2 PEXT instruction (faster on modern CPUs).
+     * @param square The square index (0-63) where the rook is located
+     * @param occupancy Bitboard representing all occupied squares
+     * @return Bitboard of squares the rook can attack
+     */
     static Bitboard rook_attacks_pext(int square, Bitboard occupancy);
+    
+    /**
+     * Generate bishop attacks using BMI2 PEXT instruction (faster on modern CPUs).
+     * @param square The square index (0-63) where the bishop is located
+     * @param occupancy Bitboard representing all occupied squares
+     * @return Bitboard of squares the bishop can attack
+     */
     static Bitboard bishop_attacks_pext(int square, Bitboard occupancy);
     #endif
     
-    // Non-sliding piece attacks
+    /**
+     * Generate knight attack bitboard for a given square.
+     * Knight attacks are independent of occupancy.
+     * @param square The square index (0-63) where the knight is located
+     * @return Bitboard of squares the knight can attack
+     */
     static Bitboard knight_attacks(int square);
+    
+    /**
+     * Generate king attack bitboard for a given square.
+     * King attacks are independent of occupancy.
+     * @param square The square index (0-63) where the king is located
+     * @return Bitboard of squares the king can attack
+     */
     static Bitboard king_attacks(int square);
+    
+    /**
+     * Generate pawn attack bitboard for a single pawn.
+     * Pawn attacks are diagonal captures only, not forward moves.
+     * @param square The square index (0-63) where the pawn is located
+     * @param is_white true for white pawn, false for black pawn
+     * @return Bitboard of squares the pawn can attack (capture)
+     */
     static Bitboard pawn_attacks(int square, bool is_white);
     
-    // Utility functions
+    // ========== Utility Functions ==========
+    
+    /**
+     * Convert a bitboard to a human-readable string representation.
+     * Shows the board from white's perspective (rank 8 at top).
+     * @param bb The bitboard to convert
+     * @return String representation of the bitboard
+     */
     static std::string bitboard_to_string(Bitboard bb);
+    
+    /**
+     * Print a bitboard to console in a human-readable format.
+     * Shows the board from white's perspective (rank 8 at top).
+     * @param bb The bitboard to print
+     */
     static void print_bitboard(Bitboard bb);
+    
+    /**
+     * Alias for lsb() function - get least significant bit index.
+     * @param bb The bitboard to search (must not be zero)
+     * @return The square index (0-63) of the least significant bit
+     */
     static int get_lsb_index(Bitboard bb) { return get_lsb(bb); }
     
-    // Public accessors for magic bitboard data
+    // ========== Magic Bitboard Data Accessors ==========
+    
+    /**
+     * Get the magic number for rook attacks at a given square.
+     * @param square The square index (0-63)
+     * @return The magic number used for rook attack generation
+     */
     static Bitboard get_rook_magic(int square) { return rook_magics[square]; }
+    
+    /**
+     * Get the magic number for bishop attacks at a given square.
+     * @param square The square index (0-63)
+     * @return The magic number used for bishop attack generation
+     */
     static Bitboard get_bishop_magic(int square) { return bishop_magics[square]; }
+    
+    /**
+     * Get the shift value for rook magic bitboard indexing.
+     * @param square The square index (0-63)
+     * @return The shift value used in rook magic bitboard calculations
+     */
     static int get_rook_shift(int square) { return rook_shifts[square]; }
+    
+    /**
+     * Get the shift value for bishop magic bitboard indexing.
+     * @param square The square index (0-63)
+     * @return The shift value used in bishop magic bitboard calculations
+     */
     static int get_bishop_shift(int square) { return bishop_shifts[square]; }
+    
+    /**
+     * Get pointer to the rook attacks lookup table for a given square.
+     * @param square The square index (0-63)
+     * @return Pointer to the rook attacks table for the square
+     */
     static Bitboard* get_rook_attacks_table(int square) { return rook_attacks_table[square]; }
+    
+    /**
+     * Get pointer to the bishop attacks lookup table for a given square.
+     * @param square The square index (0-63)
+     * @return Pointer to the bishop attacks table for the square
+     */
     static Bitboard* get_bishop_attacks_table(int square) { return bishop_attacks_table[square]; }
+    
+    /**
+     * Get the rook movement mask for a given square (excludes edge squares).
+     * @param square The square index (0-63)
+     * @return Bitboard mask of relevant squares for rook movement
+     */
     static Bitboard get_rook_mask(int square) { return rook_mask(square); }
+    
+    /**
+     * Get the bishop movement mask for a given square (excludes edge squares).
+     * @param square The square index (0-63)
+     * @return Bitboard mask of relevant squares for bishop movement
+     */
     static Bitboard get_bishop_mask(int square) { return bishop_mask(square); }
     
 private:

@@ -9,14 +9,24 @@
 // Forward declarations
 struct BitboardMoveUndoData;
 
-// Game phase constants
+/**
+ * @enum GamePhase
+ * @brief Represents the current phase of the chess game
+ */
 enum GamePhase {
-    OPENING = 0,
-    MIDDLEGAME = 1,
-    ENDGAME = 2
+    OPENING = 0,     ///< Opening phase with many pieces on board
+    MIDDLEGAME = 1,  ///< Middlegame phase with tactical complexity
+    ENDGAME = 2      ///< Endgame phase with few pieces remaining
 };
 
-// Evaluation constants
+/**
+ * @namespace EvalConstants
+ * @brief Contains all evaluation constants and parameters
+ * 
+ * This namespace defines material values, positional bonuses/penalties,
+ * and various evaluation factors used throughout the evaluation function.
+ * All values are in centipawns (1/100th of a pawn).
+ */
 namespace EvalConstants {
     // Material values (centipawns) - refined values
     constexpr int PAWN_VALUE = 100;
@@ -96,102 +106,332 @@ namespace EvalConstants {
     constexpr int CONNECTED_PASSED_PAWNS_BONUS = 20;
 }
 
-// Incremental evaluation data
+/**
+ * @struct IncrementalEvalData
+ * @brief Stores incremental evaluation data for efficient position updates
+ * 
+ * This structure maintains evaluation components that can be updated
+ * incrementally as moves are made and unmade, avoiding full re-evaluation.
+ */
 struct IncrementalEvalData {
-    int material_balance;
-    int positional_balance;
-    int pawn_structure_score;
-    int king_safety_score;
-    int mobility_score;
-    GamePhase game_phase;
-    int phase_value;
+    int material_balance;      ///< Current material balance (White - Black)
+    int positional_balance;    ///< Positional evaluation balance
+    int pawn_structure_score;  ///< Pawn structure evaluation score
+    int king_safety_score;     ///< King safety evaluation score
+    int mobility_score;        ///< Piece mobility evaluation score
+    GamePhase game_phase;      ///< Current game phase
+    int phase_value;          ///< Numeric phase value for tapered evaluation
     
+    /**
+     * @brief Default constructor - initializes all values to zero/opening
+     */
     IncrementalEvalData() : material_balance(0), positional_balance(0), 
                            pawn_structure_score(0), king_safety_score(0),
                            mobility_score(0), game_phase(OPENING), phase_value(0) {}
 };
 
-// Zobrist hashing structure
+/**
+ * @struct ZobristKeys
+ * @brief Zobrist hashing keys for position hashing and transposition tables
+ * 
+ * Contains precomputed random keys for all chess position components
+ * to enable fast position hashing for transposition tables and repetition detection.
+ */
 struct ZobristKeys {
-    uint64_t piece_keys[2][6][64];  // [color][piece_type][square]
-    uint64_t castling_keys[16];     // For all castling combinations
-    uint64_t en_passant_keys[8];    // For en passant files
-    uint64_t side_to_move_key;      // For side to move
+    uint64_t piece_keys[2][6][64];  ///< Keys for pieces: [color][piece_type][square]
+    uint64_t castling_keys[16];     ///< Keys for all castling right combinations
+    uint64_t en_passant_keys[8];    ///< Keys for en passant target files
+    uint64_t side_to_move_key;      ///< Key for side to move
     
+    /**
+     * @brief Constructor - calls initialize()
+     */
     ZobristKeys();
+    
+    /**
+     * @brief Initializes all Zobrist keys with random values
+     */
     void initialize();
 };
 
-// Pawn hash table entry
+/**
+ * @struct PawnHashEntry
+ * @brief Hash table entry for caching pawn structure evaluations
+ * 
+ * Stores pawn structure evaluation results to avoid recalculating
+ * expensive pawn structure analysis for identical pawn configurations.
+ */
 struct PawnHashEntry {
-    uint64_t key;
-    int score;
-    uint8_t passed_pawns_white;
-    uint8_t passed_pawns_black;
-    uint8_t isolated_pawns_white;
-    uint8_t isolated_pawns_black;
+    uint64_t key;                   ///< Zobrist hash key for this pawn structure
+    int score;                      ///< Cached pawn structure evaluation score
+    uint8_t passed_pawns_white;     ///< Bitboard of White's passed pawns
+    uint8_t passed_pawns_black;     ///< Bitboard of Black's passed pawns
+    uint8_t isolated_pawns_white;   ///< Bitboard of White's isolated pawns
+    uint8_t isolated_pawns_black;   ///< Bitboard of Black's isolated pawns
     
+    /**
+     * @brief Default constructor - initializes all values to zero
+     */
     PawnHashEntry() : key(0), score(0), passed_pawns_white(0), 
                      passed_pawns_black(0), isolated_pawns_white(0), 
                      isolated_pawns_black(0) {}
 };
 
+/**
+ * @class Evaluation
+ * @brief Comprehensive chess position evaluation engine with incremental updates
+ * 
+ * This class provides a sophisticated evaluation system that assesses chess positions
+ * using multiple factors including material, positional values, pawn structure,
+ * king safety, piece mobility, and coordination. Supports both full evaluation
+ * and incremental updates for performance optimization.
+ */
 class Evaluation {
 public:
+    /**
+     * @brief Constructor - initializes evaluation tables and data structures
+     */
     Evaluation();
+    
+    /**
+     * @brief Default destructor
+     */
     ~Evaluation() = default;
     
-    // Main evaluation functions
+    /**
+     * @brief Evaluates a chess position comprehensively
+     * @param board The board position to evaluate
+     * @return Evaluation score in centipawns (positive favors White, negative favors Black)
+     */
     int evaluate(const Board& board);
+    
+    /**
+     * @brief Performs incremental evaluation update based on a move
+     * @param board The current board position
+     * @param move The move that was made
+     * @param undo_data Move undo information for incremental updates
+     * @return Updated evaluation score in centipawns
+     */
     int evaluate_incremental(const Board& board, const Move& move, const BitboardMoveUndoData& undo_data);
     
-    // Incremental evaluation management
+    /**
+     * @brief Initializes incremental evaluation data for a board position
+     * @param board The board position to initialize evaluation data for
+     */
     void initialize_incremental_eval(const Board& board);
+    
+    /**
+     * @brief Updates incremental evaluation data after a move
+     * @param board The current board position
+     * @param move The move that was made
+     * @param undo_data Move undo information for tracking changes
+     */
     void update_incremental_eval(const Board& board, const Move& move, const BitboardMoveUndoData& undo_data);
+    
+    /**
+     * @brief Undoes incremental evaluation changes when unmaking a move
+     * @param board The current board position
+     * @param move The move to undo
+     * @param undo_data Move undo information for reverting changes
+     */
     void undo_incremental_eval(const Board& board, const Move& move, const BitboardMoveUndoData& undo_data);
     
-    // Zobrist hashing
+    /**
+     * @brief Computes Zobrist hash for a board position
+     * @param board The board position to hash
+     * @return 64-bit Zobrist hash value
+     */
     uint64_t compute_zobrist_hash(const Board& board) const;
+    
+    /**
+     * @brief Updates Zobrist hash incrementally after a move
+     * @param current_hash The current hash value
+     * @param move The move that was made
+     * @param undo_data Move undo information for hash updates
+     * @return Updated 64-bit Zobrist hash value
+     */
     uint64_t update_zobrist_hash(uint64_t current_hash, const Move& move, const BitboardMoveUndoData& undo_data) const;
     
-    // Component evaluations
+    /**
+     * @brief Evaluates material balance between both sides
+     * @param board The board position to evaluate
+     * @return Material evaluation score in centipawns
+     */
     int evaluate_material(const Board& board) const;
+    
+    /**
+     * @brief Evaluates piece positioning using piece-square tables
+     * @param board The board position to evaluate
+     * @return Positional evaluation score based on piece placement
+     */
     int evaluate_piece_square_tables(const Board& board) const;
+    
+    /**
+     * @brief Evaluates pawn structure quality (isolated, doubled, passed, etc.)
+     * @param board The board position to evaluate
+     * @return Pawn structure evaluation score
+     */
     int evaluate_pawn_structure(const Board& board);
+    
+    /**
+     * @brief Evaluates king safety (pawn shield, open files, attacks)
+     * @param board The board position to evaluate
+     * @return King safety evaluation score
+     */
     int evaluate_king_safety(const Board& board) const;
+    
+    /**
+     * @brief Evaluates piece mobility and activity
+     * @param board The board position to evaluate
+     * @return Mobility evaluation score
+     */
     int evaluate_mobility(const Board& board) const;
+    
+    /**
+     * @brief Evaluates piece coordination and tactical patterns
+     * @param board The board position to evaluate
+     * @return Piece coordination evaluation score
+     */
     int evaluate_piece_coordination(const Board& board) const;
+    
+    /**
+     * @brief Evaluates endgame-specific factors
+     * @param board The board position to evaluate
+     * @return Endgame evaluation adjustments
+     */
     int evaluate_endgame_factors(const Board& board) const;
+    
+    /**
+     * @brief Evaluates development and tempo factors
+     * @param board The board position to evaluate
+     * @return Development evaluation score
+     */
     int evaluate_development(const Board& board) const;
+    
+    /**
+     * @brief Evaluates development for a specific color
+     * @param board The board position to evaluate
+     * @param color The color to evaluate development for
+     * @return Development evaluation score for the specified color
+     */
     int evaluate_development_for_color(const Board& board, Board::Color color) const;
+    
+    /**
+     * @brief Evaluates penalties for pawns that limit piece development
+     * @param board The board position to evaluate
+     * @param color The color to evaluate for
+     * @return Penalty score for development-limiting pawn moves
+     */
     int evaluate_development_limiting_pawn_penalties(const Board& board, Board::Color color) const;
     
-    // I. Structural Safety (Static Factors)
+    /**
+     * @brief Evaluates pawn shield protection around the king
+     * @param board The board position to evaluate
+     * @param color The color of the king to evaluate
+     * @return Pawn shield evaluation score
+     */
     int evaluate_pawn_shield(const Board& board, Board::Color color) const;
+    
+    /**
+     * @brief Evaluates open files near the king for safety threats
+     * @param board The board position to evaluate
+     * @param color The color of the king to evaluate
+     * @return Open files safety evaluation score
+     */
     int evaluate_open_files_near_king(const Board& board, Board::Color color) const;
+    
+    /**
+     * @brief Evaluates the inherent safety of the king's position
+     * @param board The board position to evaluate
+     * @param color The color of the king to evaluate
+     * @return King position safety score
+     */
     int evaluate_king_position_safety(const Board& board, Board::Color color) const;
+    
+    /**
+     * @brief Evaluates pawn storms directed at the king
+     * @param board The board position to evaluate
+     * @param color The color of the king to evaluate
+     * @return Pawn storm evaluation score
+     */
     int evaluate_pawn_storms(const Board& board, Board::Color color) const;
+    
+    /**
+     * @brief Evaluates piece cover and protection around the king
+     * @param board The board position to evaluate
+     * @param color The color of the king to evaluate
+     * @return Piece cover evaluation score
+     */
     int evaluate_piece_cover(const Board& board, Board::Color color) const;
     
-    // II. Threat Evaluation (Dynamic Factors)
+    /**
+     * @brief Evaluates attacking pieces in proximity to the king
+     * @param board The board position to evaluate
+     * @param color The color of the king to evaluate
+     * @return Attacking pieces threat evaluation score
+     */
     int evaluate_attacking_pieces_nearby(const Board& board, Board::Color color) const;
+    
+    /**
+     * @brief Evaluates king mobility and escape square availability
+     * @param board The board position to evaluate
+     * @param color The color of the king to evaluate
+     * @return King mobility evaluation score
+     */
     int evaluate_king_mobility_and_escape(const Board& board, Board::Color color) const;
+    
+    /**
+     * @brief Evaluates tactical threats directed at the king
+     * @param board The board position to evaluate
+     * @param color The color of the king to evaluate
+     * @return Tactical threats evaluation score
+     */
     int evaluate_tactical_threats_to_king(const Board& board, Board::Color color) const;
+    
+    /**
+     * @brief Evaluates attack maps and pressure zones around the king
+     * @param board The board position to evaluate
+     * @param color The color of the king to evaluate
+     * @return Attack pressure evaluation score
+     */
     int evaluate_attack_maps_pressure_zones(const Board& board, Board::Color color) const;
     
     // III. Game Phase Adjustments
     
     // IV. Dynamic Considerations
     
-    // Tapered evaluation (interpolates between opening and endgame)
+    /**
+     * @brief Interpolates between opening and endgame scores based on game phase
+     * @param opening_score The opening evaluation score
+     * @param endgame_score The endgame evaluation score
+     * @param phase_value The current game phase value
+     * @return Tapered evaluation score
+     */
     int tapered_eval(int opening_score, int endgame_score, int phase_value) const;
     
-    // Game phase detection
+    /**
+     * @brief Determines the current game phase
+     * @param board The board position to analyze
+     * @return The current game phase (OPENING, MIDDLEGAME, or ENDGAME)
+     */
     GamePhase get_game_phase(const Board& board) const;
+    
+    /**
+     * @brief Calculates numerical phase value for tapered evaluation
+     * @param board The board position to analyze
+     * @return Phase value for interpolation calculations
+     */
     int get_phase_value(const Board& board) const;
     
-    // Utility functions
+    /**
+     * @brief Clears the pawn hash table cache
+     */
     void clear_pawn_hash_table();
+    
+    /**
+     * @brief Prints detailed evaluation breakdown for debugging
+     * @param board The board position to analyze
+     */
     void print_evaluation_breakdown(const Board& board);
     
 private:
@@ -448,37 +688,189 @@ private:
     static Bitboard isolated_pawn_masks[64];   // [square] - adjacent files
     static Bitboard file_masks[8];             // [file] - entire file
     
-    // Helper functions
+    /**
+     * @brief Gets piece-square table value for a specific piece and position
+     * @param piece_type The type of piece
+     * @param color The color of the piece
+     * @param square The square position
+     * @param phase The current game phase
+     * @return Piece-square table value
+     */
     int get_piece_square_value(Board::PieceType piece_type, Board::Color color, int square, GamePhase phase) const;
+    
+    /**
+     * @brief Evaluates pawn structure for a specific color
+     * @param board The board position to evaluate
+     * @param color The color to evaluate
+     * @return Pawn structure evaluation score for the color
+     */
     int evaluate_pawn_structure_for_color(const Board& board, Board::Color color) const;
+    
+    /**
+     * @brief Evaluates king safety for a specific color
+     * @param board The board position to evaluate
+     * @param color The color to evaluate
+     * @return King safety evaluation score for the color
+     */
     int evaluate_king_safety_for_color(const Board& board, Board::Color color) const;
+    
+    /**
+     * @brief Evaluates piece mobility for a specific color
+     * @param board The board position to evaluate
+     * @param color The color to evaluate
+     * @return Mobility evaluation score for the color
+     */
     int evaluate_mobility_for_color(const Board& board, Board::Color color) const;
+    
+    /**
+     * @brief Evaluates piece coordination for a specific color
+     * @param board The board position to evaluate
+     * @param color The color to evaluate
+     * @return Piece coordination evaluation score for the color
+     */
     int evaluate_piece_coordination_for_color(const Board& board, Board::Color color) const;
+    
+    /**
+     * @brief Evaluates endgame factors for a specific color
+     * @param board The board position to evaluate
+     * @param color The color to evaluate
+     * @return Endgame factors evaluation score for the color
+     */
     int evaluate_endgame_factors_for_color(const Board& board, Board::Color color) const;
+    
+    /**
+     * @brief Counts attacking pieces in the king zone
+     * @param board The board position to analyze
+     * @param attacking_color The color of attacking pieces
+     * @param king_color The color of the king being attacked
+     * @return Number of attacking pieces in king zone
+     */
     int count_attackers_to_king_zone(const Board& board, Board::Color attacking_color, Board::Color king_color) const;
+    
+    /**
+     * @brief Checks if a file is completely open (no pawns)
+     * @param board The board position to check
+     * @param file The file to check (0-7)
+     * @return True if the file is open
+     */
     bool is_file_open(const Board& board, int file) const;
+    
+    /**
+     * @brief Checks if a file is semi-open for a color (no pawns of that color)
+     * @param board The board position to check
+     * @param file The file to check (0-7)
+     * @param color The color to check for
+     * @return True if the file is semi-open for the color
+     */
     bool is_file_semi_open(const Board& board, int file, Board::Color color) const;
     
-    // Utility functions
+    /**
+     * @brief Converts rank and file to square index
+     * @param rank The rank (0-7)
+     * @param file The file (0-7)
+     * @return Square index (0-63)
+     */
     static int square_to_index(int rank, int file) { return rank * 8 + file; }
-    static int mirror_square(int square) { return square ^ 56; } // Flip rank
+    
+    /**
+     * @brief Mirrors a square vertically (flips rank)
+     * @param square The square to mirror
+     * @return Mirrored square index
+     */
+    static int mirror_square(int square) { return square ^ 56; }
+    
+    /**
+     * @brief Checks if a pawn is a passed pawn
+     * @param board The board position to check
+     * @param square The pawn's square
+     * @param color The pawn's color
+     * @return True if the pawn is passed
+     */
     bool is_passed_pawn(const Board& board, int square, Board::Color color) const;
+    
+    /**
+     * @brief Checks if a pawn is isolated (no friendly pawns on adjacent files)
+     * @param board The board position to check
+     * @param square The pawn's square
+     * @param color The pawn's color
+     * @return True if the pawn is isolated
+     */
     static bool is_isolated_pawn(const Board& board, int square, Board::Color color);
+    
+    /**
+     * @brief Checks if a pawn is doubled (another friendly pawn on same file)
+     * @param board The board position to check
+     * @param square The pawn's square
+     * @param color The pawn's color
+     * @return True if the pawn is doubled
+     */
     static bool is_doubled_pawn(const Board& board, int square, Board::Color color);
+    
+    /**
+     * @brief Checks if a pawn is backward (cannot advance safely)
+     * @param board The board position to check
+     * @param square The pawn's square
+     * @param color The pawn's color
+     * @return True if the pawn is backward
+     */
     static bool is_backward_pawn(const Board& board, int square, Board::Color color);
+    
+    /**
+     * @brief Checks if a pawn is part of a pawn chain
+     * @param board The board position to check
+     * @param square The pawn's square
+     * @param color The pawn's color
+     * @return True if the pawn is in a chain
+     */
     static bool is_pawn_chain(const Board& board, int square, Board::Color color);
+    
+    /**
+     * @brief Gets bonus score for passed pawn based on rank
+     * @param square The pawn's square
+     * @param color The pawn's color
+     * @return Rank-based bonus score
+     */
     static int get_passed_pawn_rank_bonus(int square, Board::Color color);
+    
+    /**
+     * @brief Calculates Manhattan distance between two squares
+     * @param sq1 First square
+     * @param sq2 Second square
+     * @return Manhattan distance
+     */
     static int distance_between_squares(int sq1, int sq2);
+    
+    /**
+     * @brief Checks if a square is in the king's safety zone
+     * @param square The square to check
+     * @param king_square The king's square
+     * @return True if square is in king zone
+     */
     static bool is_in_king_zone(int square, int king_square);
     
-    // Helper functions for comprehensive king safety evaluation
+    /**
+     * @brief Evaluates pin threats and tactical vulnerabilities
+     * @param board The board position to evaluate
+     * @param color The color to evaluate pins for
+     * @return Pin evaluation score
+     */
     int evaluate_pins(const Board& board, Board::Color color) const;
 
-    // Initialization functions
+    /**
+     * @brief Initializes passed pawn masks for efficient evaluation
+     */
     void init_passed_pawn_masks();
+    
+    /**
+     * @brief Initializes pawn-related bitboard masks
+     */
     void init_pawn_masks();
     
-    // Branch-free evaluation helpers
+    /**
+     * @brief Returns evaluation sign multiplier for a color
+     * @param color The color to get sign for
+     * @return 1 for White, -1 for Black
+     */
     static int side_sign(Board::Color color) { return color == Board::WHITE ? 1 : -1; }
 };
 

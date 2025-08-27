@@ -62,6 +62,16 @@ public:
     // Board setup
     void set_starting_position();
     void set_from_fen(const std::string& fen);
+    
+    /**
+     * @brief Convert the current board position to FEN notation
+     * 
+     * Generates a FEN (Forsyth-Edwards Notation) string representing
+     * the current board state, including piece positions, active color,
+     * castling rights, en passant square, and move counters.
+     * 
+     * @return A FEN string representing the current position
+     */
     [[nodiscard]] std::string to_fen() const;
     
     // Piece manipulation
@@ -96,8 +106,41 @@ public:
     
     // Move operations
     [[nodiscard]] bool is_move_valid(const Move& move) const;
+    
+    /**
+     * @brief Check if a move is legal in the current position
+     * 
+     * Determines if a move is legal by generating all legal moves
+     * and checking if the given move is among them. This ensures
+     * the move doesn't leave the king in check.
+     * 
+     * @param move The move to check for legality
+     * @return true if the move is legal, false otherwise
+     */
     bool is_move_legal(const Move& move);
+    
+    /**
+     * @brief Make a move on the board if it's legal
+     * 
+     * Attempts to make the given move on the board. If the move
+     * is legal, it will be applied and undo data will be returned.
+     * If the move is illegal, no changes are made and empty undo data is returned.
+     * 
+     * @param move The move to make
+     * @return BitboardMoveUndoData for undoing the move, or empty data if move was illegal
+     */
     BitboardMoveUndoData make_move(const Move& move);
+    
+    /**
+     * @brief Apply a move to the board without legality checking
+     * 
+     * Directly applies the given move to the board, updating all
+     * relevant bitboards, game state, and piece positions. This function
+     * assumes the move is legal and does not perform validation.
+     * 
+     * @param move The move to apply
+     * @return BitboardMoveUndoData containing information needed to undo the move
+     */
     BitboardMoveUndoData apply_move(const Move& move);
     void undo_move(const BitboardMoveUndoData& undo_data);
     
