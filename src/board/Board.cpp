@@ -17,6 +17,22 @@ static bool char_lookup_initialized = false;
 static uint8_t CASTLING_RIGHTS_MASK[64];
 static bool castling_mask_initialized = false;
 
+/**
+ * @brief Initializes the character-to-piece-type lookup table for FEN parsing
+ * 
+ * This function sets up a global lookup table that maps FEN piece characters
+ * to their corresponding PieceType enum values. The table is used for efficient
+ * character-to-piece conversion during FEN string parsing and board setup.
+ * 
+ * The function uses a guard to ensure initialization happens only once.
+ * All characters default to PAWN, then specific mappings are set for:
+ * - p/P: PAWN
+ * - n/N: KNIGHT  
+ * - b/B: BISHOP
+ * - r/R: ROOK
+ * - q/Q: QUEEN
+ * - k/K: KING
+ */
 void init_char_lookup() {
     if (char_lookup_initialized) return;
     
@@ -42,6 +58,29 @@ void init_char_lookup() {
     char_lookup_initialized = true;
 }
 
+/**
+ * @brief Initializes the castling rights mask lookup table
+ * 
+ * This function sets up a global lookup table that defines which castling rights
+ * are lost when a piece moves from or to a specific square. The masks are used
+ * during move application to efficiently update castling rights.
+ * 
+ * The function uses a guard to ensure initialization happens only once.
+ * 
+ * Castling rights bit encoding:
+ * - 0x01: White kingside castling
+ * - 0x02: White queenside castling  
+ * - 0x04: Black kingside castling
+ * - 0x08: Black queenside castling
+ * 
+ * Key squares that affect castling rights:
+ * - a1 (0): Removes White queenside when rook moves
+ * - h1 (7): Removes White kingside when rook moves
+ * - e1 (4): Removes both White rights when king moves
+ * - a8 (56): Removes Black queenside when rook moves
+ * - h8 (63): Removes Black kingside when rook moves
+ * - e8 (60): Removes both Black rights when king moves
+ */
 void init_castling_mask() {
     if (castling_mask_initialized) return;
     

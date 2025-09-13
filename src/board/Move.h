@@ -15,15 +15,15 @@
  * @note TODO: Look into using a more efficient representation for moves
  */
 struct Move {
-    int from_rank;
-    int from_file;
-    int to_rank;
-    int to_file;
-    char piece;           // The piece being moved
-    char captured_piece;  // The piece being captured (if any), '.' if none
-    char promotion_piece; // The piece to promote to (if any), '.' if none
-    bool is_castling;     // True if this is a castling move
-    bool is_en_passant;   // True if this is an en passant capture
+    int from_rank;        ///< Source rank (0-7)
+    int from_file;        ///< Source file (0-7)
+    int to_rank;          ///< Destination rank (0-7)
+    int to_file;          ///< Destination file (0-7)
+    char piece;           ///< The piece being moved
+    char captured_piece;  ///< The piece being captured (if any), '.' if none
+    char promotion_piece; ///< The piece to promote to (if any), '.' if none
+    bool is_castling;     ///< True if this is a castling move
+    bool is_en_passant;   ///< True if this is an en passant capture
     
     /**
      * @brief Default constructor
@@ -148,6 +148,16 @@ struct Move {
                piece == other.piece && captured_piece == other.captured_piece &&
                promotion_piece == other.promotion_piece && is_castling == other.is_castling &&
                is_en_passant == other.is_en_passant;
+    }
+    
+    /**
+     * @brief Inequality comparison operator
+     * 
+     * @param other The move to compare with
+     * @return true if moves are different, false if identical
+     */
+    bool operator!=(const Move& other) const {
+        return !(*this == other);
     }
 };
 

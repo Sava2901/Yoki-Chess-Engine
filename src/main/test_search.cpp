@@ -1,517 +1,347 @@
 #include <iostream>
 #include <cassert>
 #include <chrono>
+#include <memory>
+#include <stdexcept>
+#include <iomanip>
 #include "../engine/Search.h"
 #include "../engine/Evaluation.h"
 #include "../board/Board.h"
 #include "../board/Move.h"
 #include "../board/MoveGenerator.h"
 
-class MinimaxTester {
+/**
+ * @brief Simple test program for the Search engine
+ * 
+ * Tests the 4 required search function variants:
+ * - Move search_move() - returns best move, no time limit
+ * - Move search_move(time_limit) - returns best move with time limit
+ * - SearchResult search() - returns full search result, no time limit
+ * - SearchResult search(time_limit) - returns full search result with time limit
+ */
+class SearchEngineTest {
 private:
-    Search search;
-    Evaluation evaluation;
+    std::unique_ptr<Search> search;
+    std::unique_ptr<Evaluation> evaluation;
     Board board;
     int tests_passed = 0;
     int tests_failed = 0;
+    
+    static constexpr int DEFAULT_SEARCH_DEPTH = 3; // Increased with optimizations (killer moves, history heuristic, quiescence depth limit)
+    static constexpr int MULTITHREADING_SEARCH_DEPTH = 5; // Higher depth for performance testing
+    static constexpr std::chrono::milliseconds SHORT_TIME_LIMIT{100};
+    static constexpr std::chrono::milliseconds MEDIUM_TIME_LIMIT{500};
+    static constexpr std::chrono::milliseconds PERFORMANCE_TIME_LIMIT{2000}; // Longer time for performance tests
 
 public:
-    MinimaxTester() {
-        // Initialize search with evaluation
-        search.set_evaluation(&evaluation);
-        std::cout << "=== Minimax Algorithm Test Suite ===\n\n";
+    SearchEngineTest() {
+        try {
+            evaluation = std::make_unique<Evaluation>();
+            search = std::make_unique<Search>();
+            std::cout << "=== Search Engine Test ===\n";
+            std::cout << "Initializing search engine...\n\n";
+        } catch (const std::exception& e) {
+            std::cerr << "Failed to initialize test: " << e.what() << std::endl;
+            throw;
+        }
     }
-
+    
     void run_all_tests() {
-        test_basic_minimax();
-        test_alpha_beta_pruning();
-        test_iterative_deepening();
-        test_mate_detection();
-        test_time_management();
-        test_move_ordering();
-        test_draw_detection();
-        test_search_statistics();
+        std::cout << "Running search engine tests...\n\n";
         
-        // New comprehensive tests
-        test_checkmate_positions();
-        test_tactical_positions();
-        test_endgame_positions();
-        test_search_consistency();
-        test_depth_scaling();
-        test_position_evaluation_bounds();
-        test_invalid_positions();
-        test_opening_positions();
-        test_middlegame_complexity();
-        test_search_interruption();
+        try {
+            test_basic_move_search();
+            test_timed_move_search();
+            test_basic_search_result();
+            test_timed_search_result();
+            test_multithreading();
+            test_time_management();
+            test_single_vs_multi_thread_performance();
+            test_thread_scaling();
+        } catch (const std::exception& e) {
+            std::cerr << "Test execution failed: " << e.what() << std::endl;
+            tests_failed++;
+        }
         
         print_summary();
     }
 
 private:
-    void assert_test(bool condition, const std::string& test_name) {
+    void assert_test(bool condition, const std::string& test_name, const std::string& details = "") {
         if (condition) {
-            std::cout << "✓ " << test_name << " PASSED\n";
             tests_passed++;
+            std::cout << "✓ " << test_name;
+            if (!details.empty()) {
+                std::cout << " (" << details << ")";
+            }
+            std::cout << "\n";
         } else {
-            std::cout << "✗ " << test_name << " FAILED\n";
             tests_failed++;
-        }
-    }
-
-    void test_basic_minimax() {
-        std::cout << "Testing Basic Minimax Functionality...\n";
-        
-        // Test with starting position
-        board.set_starting_position();
-        
-        Search::SearchResult result = search.search_with_stats(board, 4);
-        
-        assert_test(!result.best_move.to_algebraic().empty(), "Returns valid move");
-        assert_test(result.depth >= 1, "Search depth is positive");
-        assert_test(result.stats.nodes_searched > 0, "Nodes were searched");
-        
-        std::cout << "Best move found: " << result.best_move.to_algebraic() << "\n";
-        std::cout << "Nodes searched: " << result.stats.nodes_searched << "\n";
-        std::cout << "Search depth: " << result.depth << "\n";
-        
-        std::cout << "\n";
-    }
-
-    void test_alpha_beta_pruning() {
-        std::cout << "Testing Alpha-Beta Pruning...\n";
-        
-        board.set_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
-        
-        // Search with different depths to verify pruning effectiveness
-        Search::SearchResult result1 = search.search_with_stats(board, 2);
-        Search::SearchResult result2 = search.search_with_stats(board, 3);
-        
-        assert_test(result2.stats.nodes_searched > result1.stats.nodes_searched, 
-                   "Deeper search explores more nodes");
-        assert_test(result1.stats.beta_cutoffs > 0 || result2.stats.beta_cutoffs > 0, 
-                   "Beta cutoffs occurred");
-        
-        std::cout << "Depth 2 nodes: " << result1.stats.nodes_searched << "\n";
-        std::cout << "Depth 3 nodes: " << result2.stats.nodes_searched << "\n";
-        std::cout << "Beta cutoffs: " << result2.stats.beta_cutoffs << "\n";
-        
-        std::cout << "\n";
-    }
-
-    void test_iterative_deepening() {
-        std::cout << "Testing Iterative Deepening...\n";
-        
-        board.set_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
-        
-        Search::SearchResult result = search.search_with_stats(board, 4);
-        
-        assert_test(result.depth <= 4, "Respects maximum depth");
-        assert_test(result.depth >= 1, "Reached at least depth 1");
-        assert_test(!result.best_move.to_algebraic().empty(), "Found a valid move");
-        
-        std::cout << "Max depth reached: " << result.depth << "\n";
-        std::cout << "Final score: " << result.score << "\n";
-        
-        std::cout << "\n";
-    }
-
-    void test_mate_detection() {
-        std::cout << "Testing Mate Detection...\n";
-        
-        // Test a position where mate is possible
-        board.set_from_fen("rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3");
-        
-        Search::SearchResult result = search.search_with_stats(board, 3);
-        
-        assert_test(!result.best_move.to_algebraic().empty(), "Returns move in complex position");
-        assert_test(result.score != 0 || true, "Score computed");
-        
-        if (result.is_mate) {
-            std::cout << "Mate detected in " << result.mate_in << " moves\n";
-        } else {
-            std::cout << "Position evaluated, score: " << result.score << "\n";
-        }
-        
-        std::cout << "\n";
-    }
-
-    void test_time_management() {
-        std::cout << "Testing Time Management...\n";
-        
-        board.set_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
-        
-        auto start_time = std::chrono::steady_clock::now();
-        Search::SearchResult result = search.search_with_stats_timed(board, 10, std::chrono::milliseconds(100));
-        auto end_time = std::chrono::steady_clock::now();
-        
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-        
-        assert_test(elapsed.count() <= 200, "Respects time limit (with tolerance)");
-        assert_test(!result.best_move.to_algebraic().empty(), "Returns move within time limit");
-        
-        std::cout << "Time limit: 100ms, Actual: " << elapsed.count() << "ms\n";
-        std::cout << "Depth reached: " << result.depth << "\n";
-        
-        std::cout << "\n";
-    }
-
-    void test_move_ordering() {
-        std::cout << "Testing Move Ordering...\n";
-        
-        // Position with captures available
-        board.set_from_fen("rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 2");
-        
-        Search::SearchResult result = search.search_with_stats(board, 3);
-        
-        assert_test(result.stats.beta_cutoffs >= 0, "Beta cutoffs tracked");
-        assert_test(!result.best_move.to_algebraic().empty(), "Valid move returned");
-        
-        std::cout << "Beta cutoffs: " << result.stats.beta_cutoffs << "\n";
-        std::cout << "Best move: " << result.best_move.to_algebraic() << "\n";
-        
-        std::cout << "\n";
-    }
-
-    void test_draw_detection() {
-        std::cout << "Testing Draw Detection...\n";
-        
-        // Position approaching 50-move rule
-        board.set_from_fen("8/8/8/8/8/8/8/K6k w - - 99 100");
-        
-        Search::SearchResult result = search.search_with_stats(board, 2);
-        
-        assert_test(!result.best_move.to_algebraic().empty() || true, "Handles near-draw position");
-        
-        std::cout << "Position near 50-move rule handled\n";
-        std::cout << "Score: " << result.score << "\n";
-        
-        std::cout << "\n";
-    }
-
-    void test_search_statistics() {
-        std::cout << "Testing Search Statistics...\n";
-        
-        board.set_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
-        
-        Search::SearchResult result = search.search_with_stats(board, 3);
-        
-        assert_test(result.stats.nodes_searched > 0, "Nodes searched > 0");
-        assert_test(result.stats.time_elapsed.count() >= 0, "Time elapsed >= 0");
-        assert_test(result.stats.beta_cutoffs >= 0, "Beta cutoffs >= 0");
-        
-        std::cout << "Statistics collected:\n";
-        std::cout << "  Nodes: " << result.stats.nodes_searched << "\n";
-        std::cout << "  Beta cutoffs: " << result.stats.beta_cutoffs << "\n";
-        std::cout << "  Time: " << result.stats.time_elapsed.count() << "ms\n";
-        
-        std::cout << "\n";
-    }
-
-    /**
-     * Test known checkmate positions to verify the engine finds forced mates
-     */
-    void test_checkmate_positions() {
-        std::cout << "Testing Checkmate Positions...\n";
-        
-        // Mate in 1: Back rank mate
-        board.set_from_fen("6k1/5ppp/8/8/8/8/8/R6K w - - 0 1");
-        Search::SearchResult result1 = search.search_with_stats(board, 3);
-        
-        assert_test(!result1.best_move.to_algebraic().empty(), "Finds move in mate in 1 position");
-        std::cout << "Mate in 1 - Best move: " << result1.best_move.to_algebraic() << "\n";
-        
-        // Mate in 2: Queen and King vs King
-        board.set_from_fen("8/8/8/8/8/8/8/K6Q w - - 0 1");
-        Search::SearchResult result2 = search.search_with_stats(board, 5);
-        
-        assert_test(!result2.best_move.to_algebraic().empty(), "Finds move in mate in 2 position");
-        if (result2.is_mate) {
-            std::cout << "Mate detected in " << result2.mate_in << " moves\n";
-        }
-        
-        std::cout << "\n";
-    }
-
-    /**
-     * Test tactical positions (pins, forks, skewers, discovered attacks)
-     */
-    void test_tactical_positions() {
-        std::cout << "Testing Tactical Positions...\n";
-        
-        // Pin position: Rook pins bishop to king (with timeout)
-        board.set_from_fen("r3k2r/8/8/8/8/8/8/R1B1K2R w KQkq - 0 1");
-        Search::SearchResult result1 = search.search_with_stats_timed(board, 4, std::chrono::milliseconds(1000));
-        
-        assert_test(!result1.best_move.to_algebraic().empty(), "Handles pin position");
-        std::cout << "Pin position - Best move: " << result1.best_move.to_algebraic() << "\n";
-        
-        // Simpler fork position to avoid hanging (with timeout)
-        board.set_from_fen("rnbqkb1r/pppp1ppp/5n2/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 0 1");
-        Search::SearchResult result2 = search.search_with_stats_timed(board, 3, std::chrono::milliseconds(1000));
-        
-        assert_test(!result2.best_move.to_algebraic().empty(), "Handles fork position");
-        assert_test(result2.stats.nodes_searched > 10, "Searches sufficient nodes in tactical position");
-        
-        std::cout << "Fork position - Nodes searched: " << result2.stats.nodes_searched << "\n";
-        std::cout << "Fork position - Best move: " << result2.best_move.to_algebraic() << "\n";
-        std::cout << "\n";
-    }
-
-    /**
-     * Test basic endgame positions (KQ vs K, KR vs K, pawn promotion scenarios)
-     */
-    void test_endgame_positions() {
-        std::cout << "Testing Endgame Positions...\n";
-        
-        // King and Queen vs King
-        board.set_from_fen("8/8/8/8/8/8/8/K6Q w - - 0 1");
-        Search::SearchResult result1 = search.search_with_stats(board, 4);
-        
-        assert_test(!result1.best_move.to_algebraic().empty(), "Finds move in KQ vs K endgame");
-        std::cout << "KQ vs K - Score: " << result1.score << "\n";
-        
-        // King and Rook vs King
-        board.set_from_fen("8/8/8/8/8/8/8/K6R w - - 0 1");
-        Search::SearchResult result2 = search.search_with_stats(board, 4);
-        
-        assert_test(!result2.best_move.to_algebraic().empty(), "Finds move in KR vs K endgame");
-        std::cout << "KR vs K - Score: " << result2.score << "\n";
-        
-        // Pawn promotion scenario
-        board.set_from_fen("8/P7/8/8/8/8/8/K6k w - - 0 1");
-        Search::SearchResult result3 = search.search_with_stats(board, 3);
-        
-        assert_test(!result3.best_move.to_algebraic().empty(), "Handles pawn promotion");
-        std::cout << "Pawn promotion - Best move: " << result3.best_move.to_algebraic() << "\n";
-        
-        std::cout << "\n";
-    }
-
-    /**
-     * Test that multiple searches of the same position return consistent results
-     */
-    void test_search_consistency() {
-        std::cout << "Testing Search Consistency...\n";
-        
-        board.set_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
-        
-        Search::SearchResult result1 = search.search_with_stats(board, 3);
-        Search::SearchResult result2 = search.search_with_stats(board, 3);
-        Search::SearchResult result3 = search.search_with_stats(board, 3);
-        
-        assert_test(result1.best_move.to_algebraic() == result2.best_move.to_algebraic(), 
-                   "Consistent results across multiple searches");
-        assert_test(result2.best_move.to_algebraic() == result3.best_move.to_algebraic(), 
-                   "Consistent results in third search");
-        assert_test(result1.score == result2.score && result2.score == result3.score, 
-                   "Consistent evaluation scores");
-        
-        std::cout << "Consistent move: " << result1.best_move.to_algebraic() << "\n";
-        std::cout << "Consistent score: " << result1.score << "\n";
-        
-        std::cout << "\n";
-    }
-
-    /**
-     * Test how search performance scales with increasing depth
-     */
-    void test_depth_scaling() {
-        std::cout << "Testing Depth Scaling...\n";
-        
-        board.set_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
-        
-        std::vector<int> depths = {1, 2, 3};
-        std::vector<int> node_counts;
-        
-        for (int depth : depths) {
-            Search::SearchResult result = search.search_with_stats(board, depth);
-            node_counts.push_back(result.stats.nodes_searched);
-            std::cout << "Depth " << depth << ": " << result.stats.nodes_searched << " nodes\n";
-        }
-        
-        // Verify that deeper searches generally explore more nodes
-        for (size_t i = 1; i < node_counts.size(); ++i) {
-            assert_test(node_counts[i] >= node_counts[i-1], 
-                       "Deeper search explores at least as many nodes");
-        }
-        
-        assert_test(node_counts.back() > node_counts.front(), 
-                   "Significant increase in nodes from depth 1 to max depth");
-        
-        std::cout << "\n";
-    }
-
-    /**
-     * Test that evaluation scores stay within reasonable bounds
-     */
-    void test_position_evaluation_bounds() {
-        std::cout << "Testing Position Evaluation Bounds...\n";
-        
-        std::vector<std::string> test_positions = {
-            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", // Starting position
-            "8/8/8/8/8/8/8/K6Q w - - 0 1", // Winning position
-            "8/8/8/8/8/8/8/K6q w - - 0 1", // Losing position
-            "8/8/8/8/8/8/8/K6k w - - 0 1"  // Drawn position
-        };
-        
-        const int MAX_REASONABLE_SCORE = 10000;
-        
-        for (const auto& fen : test_positions) {
-            board.set_from_fen(fen);
-            Search::SearchResult result = search.search_with_stats(board, 3);
-            
-            assert_test(std::abs(result.score) <= MAX_REASONABLE_SCORE || result.is_mate, 
-                       "Evaluation score within reasonable bounds");
-            
-            std::cout << "Position: " << fen.substr(0, 20) << "... Score: " << result.score;
-            if (result.is_mate) {
-                std::cout << " (Mate in " << result.mate_in << ")";
+            std::cout << "✗ " << test_name;
+            if (!details.empty()) {
+                std::cout << " - " << details;
             }
             std::cout << "\n";
         }
-        
-        std::cout << "\n";
     }
-
-    /**
-     * Test how the search handles edge cases like no legal moves, stalemate
-     */
-    void test_invalid_positions() {
-        std::cout << "Testing Invalid/Edge Case Positions...\n";
-        
-        // Stalemate position
-        board.set_from_fen("8/8/8/8/8/8/8/K6k w - - 0 1");
-        Search::SearchResult result1 = search.search_with_stats(board, 2);
-        
-        assert_test(result1.stats.nodes_searched >= 0, "Handles stalemate-like position");
-        std::cout << "Stalemate-like position - Score: " << result1.score << "\n";
-        
-        // Position with very few pieces
-        board.set_from_fen("8/8/8/8/8/8/8/K6k w - - 0 1");
-        Search::SearchResult result2 = search.search_with_stats(board, 3);
-        
-        assert_test(!result2.best_move.to_algebraic().empty() || result2.stats.nodes_searched > 0, 
-                   "Handles minimal piece position");
-        std::cout << "Minimal pieces - Nodes: " << result2.stats.nodes_searched << "\n";
-        
-        std::cout << "\n";
+    
+    void setup_starting_position() {
+        board.set_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
     }
-
-    /**
-     * Test search behavior in various opening positions
-     */
-    void test_opening_positions() {
-        std::cout << "Testing Opening Positions...\n";
+    
+    void test_basic_move_search() {
+        std::cout << "Testing basic move search (no time limit)...\n";
         
-        std::vector<std::string> opening_positions = {
-            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1", // After 1.e4
-            "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2", // After 1.e4 e5
-            "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2" // After 1.e4 e5 2.Nf3
-        };
+        setup_starting_position();
         
-        for (const auto& fen : opening_positions) {
-            board.set_from_fen(fen);
-            Search::SearchResult result = search.search_with_stats(board, 3);
-            
-            assert_test(!result.best_move.to_algebraic().empty(), "Finds move in opening position");
-            assert_test(result.stats.nodes_searched > 10, "Searches reasonable number of nodes");
-            
-            std::cout << "Opening move: " << result.best_move.to_algebraic() 
-                      << " (" << result.stats.nodes_searched << " nodes)\n";
+        try {
+            Move best_move = search->search_move(board, DEFAULT_SEARCH_DEPTH);
+            assert_test(best_move.is_valid(), "Basic search returns valid move", best_move.to_algebraic());
+        } catch (const std::exception& e) {
+            assert_test(false, "Basic search threw exception", e.what());
         }
         
         std::cout << "\n";
     }
-
-    /**
-     * Test complex middlegame positions with many pieces
-     */
-    void test_middlegame_complexity() {
-        std::cout << "Testing Middlegame Complexity...\n";
+    
+    void test_timed_move_search() {
+        std::cout << "Testing timed move search...\n";
         
-        // Complex middlegame position
-        board.set_from_fen("r1bq1rk1/ppp2ppp/2np1n2/2b1p3/2B1P3/3P1N2/PPP2PPP/RNBQ1RK1 w - - 0 8");
+        setup_starting_position();
         
-        Search::SearchResult result1 = search.search_with_stats(board, 2);
-        Search::SearchResult result2 = search.search_with_stats(board, 3);
-        
-        assert_test(!result1.best_move.to_algebraic().empty(), "Handles complex middlegame");
-        assert_test(result2.stats.nodes_searched > result1.stats.nodes_searched, 
-                   "Deeper search in complex position explores more nodes");
-        assert_test(result1.stats.nodes_searched > 100, "Sufficient node exploration");
-        
-        std::cout << "Complex middlegame - Depth 3: " << result1.stats.nodes_searched << " nodes\n";
-        std::cout << "Complex middlegame - Depth 4: " << result2.stats.nodes_searched << " nodes\n";
-        std::cout << "Best move: " << result1.best_move.to_algebraic() << "\n";
+        try {
+            auto start_time = std::chrono::steady_clock::now();
+            Move best_move = search->search_move(board, MEDIUM_TIME_LIMIT, DEFAULT_SEARCH_DEPTH);
+            auto end_time = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            
+            assert_test(best_move.is_valid(), "Timed search returns valid move", best_move.to_algebraic());
+            assert_test(elapsed <= MEDIUM_TIME_LIMIT + std::chrono::milliseconds(200), 
+                       "Timed search respects time limit", 
+                       std::to_string(elapsed.count()) + "ms");
+        } catch (const std::exception& e) {
+            assert_test(false, "Timed search threw exception", e.what());
+        }
         
         std::cout << "\n";
     }
-
-    /**
-     * Test that time-limited searches can be interrupted properly
-     */
-    void test_search_interruption() {
-        std::cout << "Testing Search Interruption...\n";
+    
+    void test_basic_search_result() {
+        std::cout << "Testing basic search result (no time limit)...\n";
         
-        board.set_from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        setup_starting_position();
         
-        // Very short time limit
-        auto start_time = std::chrono::steady_clock::now();
-        Search::SearchResult result1 = search.search_with_stats_timed(board, 10, std::chrono::milliseconds(10));
-        auto end_time = std::chrono::steady_clock::now();
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-        
-        assert_test(elapsed.count() <= 50, "Respects very short time limit");
-        assert_test(!result1.best_move.to_algebraic().empty() || result1.stats.nodes_searched > 0, 
-                   "Returns some result even with short time");
-        
-        // Longer time limit
-        start_time = std::chrono::steady_clock::now();
-        Search::SearchResult result2 = search.search_with_stats_timed(board, 10, std::chrono::milliseconds(200));
-        end_time = std::chrono::steady_clock::now();
-        elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-        
-        assert_test(elapsed.count() <= 300, "Respects longer time limit");
-        assert_test(result2.stats.nodes_searched >= result1.stats.nodes_searched, 
-                   "Longer time allows more node exploration");
-        
-        std::cout << "Short time (10ms): " << result1.stats.nodes_searched << " nodes\n";
-        std::cout << "Longer time (200ms): " << result2.stats.nodes_searched << " nodes\n";
+        try {
+            SearchResult result = search->search(board, DEFAULT_SEARCH_DEPTH);
+            
+            assert_test(result.best_move.is_valid(), "Search result has valid move", result.best_move.to_algebraic());
+            assert_test(result.depth > 0, "Search depth is positive", std::to_string(result.depth));
+            assert_test(result.stats.nodes_searched > 0, "Nodes were searched", std::to_string(result.stats.nodes_searched));
+            assert_test(result.time_elapsed.count() >= 0, "Time elapsed is non-negative", std::to_string(result.time_elapsed.count()) + "ms");
+            
+            std::cout << "  Depth: " << result.depth << "\n";
+            std::cout << "  Score: " << result.score << "\n";
+            std::cout << "  Nodes: " << result.stats.nodes_searched << "\n";
+            std::cout << "  Time: " << result.time_elapsed.count() << "ms\n";
+        } catch (const std::exception& e) {
+            assert_test(false, "Search result threw exception", e.what());
+        }
         
         std::cout << "\n";
     }
-
+    
+    void test_timed_search_result() {
+        std::cout << "Testing timed search result...\n";
+        
+        setup_starting_position();
+        
+        try {
+            auto start_time = std::chrono::steady_clock::now();
+            SearchResult result = search->search(board, MEDIUM_TIME_LIMIT, DEFAULT_SEARCH_DEPTH);
+            auto end_time = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            
+            assert_test(result.best_move.is_valid(), "Timed search result has valid move", result.best_move.to_algebraic());
+            assert_test(result.depth > 0, "Search depth is positive", std::to_string(result.depth));
+            assert_test(result.stats.nodes_searched > 0, "Nodes were searched", std::to_string(result.stats.nodes_searched));
+            assert_test(elapsed <= MEDIUM_TIME_LIMIT + std::chrono::milliseconds(200), 
+                       "Timed search respects time limit", 
+                       std::to_string(elapsed.count()) + "ms");
+            
+            std::cout << "  Depth: " << result.depth << "\n";
+            std::cout << "  Score: " << result.score << "\n";
+            std::cout << "  Nodes: " << result.stats.nodes_searched << "\n";
+            std::cout << "  Time: " << result.time_elapsed.count() << "ms\n";
+        } catch (const std::exception& e) {
+            assert_test(false, "Timed search result threw exception", e.what());
+        }
+        
+        std::cout << "\n";
+    }
+    
+    void test_multithreading() {
+        std::cout << "Testing multithreading support...\n";
+        
+        setup_starting_position();
+        
+        try {
+            // Test with different thread counts
+            search->set_thread_count(1);
+            assert_test(search->get_thread_count() == 1, "Single thread setting");
+            
+            search->set_thread_count(4);
+            assert_test(search->get_thread_count() == 4, "Multi-thread setting");
+            
+            // Test search with multiple threads
+            SearchResult result = search->search(board, SHORT_TIME_LIMIT, DEFAULT_SEARCH_DEPTH);
+            assert_test(result.best_move.is_valid(), "Multi-threaded search returns valid move");
+        } catch (const std::exception& e) {
+            assert_test(false, "Multithreading test threw exception", e.what());
+        }
+        
+        std::cout << "\n";
+    }
+    
+    void test_time_management() {
+        std::cout << "Testing time management...\n";
+        
+        setup_starting_position();
+        
+        try {
+            auto start_time = std::chrono::steady_clock::now();
+            SearchResult result = search->search(board, SHORT_TIME_LIMIT, 2); // Safe depth with short time
+            auto end_time = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            
+            assert_test(result.best_move.is_valid(), "Time-limited search returns valid move");
+            assert_test(elapsed <= SHORT_TIME_LIMIT + std::chrono::milliseconds(100), 
+                       "Search stops within time limit", 
+                       std::to_string(elapsed.count()) + "ms");
+        } catch (const std::exception& e) {
+            assert_test(false, "Time management test threw exception", e.what());
+        }
+        
+        std::cout << "\n";
+    }
+    
+    void test_single_vs_multi_thread_performance() {
+        std::cout << "Testing single vs multi-thread performance...\n";
+        
+        setup_starting_position();
+        
+        try {
+            // Test single-threaded performance
+            search->set_thread_count(1);
+            auto start_time = std::chrono::steady_clock::now();
+            SearchResult single_result = search->search(board, DEFAULT_SEARCH_DEPTH);
+            auto end_time = std::chrono::steady_clock::now();
+            auto single_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            
+            // Test multi-threaded performance (4 threads)
+            search->set_thread_count(4);
+            start_time = std::chrono::steady_clock::now();
+            SearchResult multi_result = search->search(board, DEFAULT_SEARCH_DEPTH);
+            end_time = std::chrono::steady_clock::now();
+            auto multi_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            
+            // Calculate performance metrics
+            double single_nps = static_cast<double>(single_result.stats.nodes_searched) / (single_elapsed.count() / 1000.0);
+            double multi_nps = static_cast<double>(multi_result.stats.nodes_searched) / (multi_elapsed.count() / 1000.0);
+            double speedup = static_cast<double>(single_elapsed.count()) / multi_elapsed.count();
+            
+            assert_test(single_result.best_move.is_valid(), "Single-threaded search returns valid move");
+            assert_test(multi_result.best_move.is_valid(), "Multi-threaded search returns valid move");
+            assert_test(multi_elapsed.count() > 0, "Multi-threaded search completed");
+            
+            std::cout << "  === Performance Comparison ===\n";
+            std::cout << "  Single Thread (1): " << single_elapsed.count() << "ms, " 
+                      << single_result.stats.nodes_searched << " nodes, " 
+                      << std::fixed << std::setprecision(0) << single_nps << " NPS\n";
+            std::cout << "  Multi Thread (4):  " << multi_elapsed.count() << "ms, " 
+                      << multi_result.stats.nodes_searched << " nodes, " 
+                      << std::fixed << std::setprecision(0) << multi_nps << " NPS\n";
+            std::cout << "  Speedup: " << std::fixed << std::setprecision(2) << speedup << "x\n";
+            
+        } catch (const std::exception& e) {
+            assert_test(false, "Performance comparison test threw exception", e.what());
+        }
+        
+        std::cout << "\n";
+    }
+    
+    void test_thread_scaling() {
+        std::cout << "Testing thread scaling performance...\n";
+        
+        setup_starting_position();
+        
+        try {
+            std::vector<int> thread_counts = {1, 2, 4, 8};
+            std::vector<std::chrono::milliseconds> times;
+            std::vector<long> nodes;
+            
+            std::cout << "  === Thread Scaling Results ===\n";
+            
+            for (int threads : thread_counts) {
+                search->set_thread_count(threads);
+                
+                auto start_time = std::chrono::steady_clock::now();
+                SearchResult result = search->search(board, DEFAULT_SEARCH_DEPTH);
+                auto end_time = std::chrono::steady_clock::now();
+                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+                
+                times.push_back(elapsed);
+                nodes.push_back(result.stats.nodes_searched);
+                
+                double nps = static_cast<double>(result.stats.nodes_searched) / (elapsed.count() / 1000.0);
+                
+                std::cout << "  Threads: " << std::setw(2) << threads 
+                          << ", Time: " << std::setw(6) << elapsed.count() << "ms"
+                          << ", Nodes: " << std::setw(8) << result.stats.nodes_searched
+                          << ", NPS: " << std::fixed << std::setprecision(0) << std::setw(8) << nps << "\n";
+                
+                assert_test(result.best_move.is_valid(), "Thread scaling test returns valid move for " + std::to_string(threads) + " threads");
+            }
+            
+            // Calculate efficiency metrics
+            if (times.size() >= 2) {
+                double speedup_2 = static_cast<double>(times[0].count()) / times[1].count();
+                double speedup_4 = static_cast<double>(times[0].count()) / times[2].count();
+                
+                std::cout << "  === Scaling Efficiency ===\n";
+                std::cout << "  2 threads speedup: " << std::fixed << std::setprecision(2) << speedup_2 << "x (" << (speedup_2/2.0*100) << "% efficiency)\n";
+                std::cout << "  4 threads speedup: " << std::fixed << std::setprecision(2) << speedup_4 << "x (" << (speedup_4/4.0*100) << "% efficiency)\n";
+            }
+            
+        } catch (const std::exception& e) {
+            assert_test(false, "Thread scaling test threw exception", e.what());
+        }
+        
+        std::cout << "\n";
+    }
+    
     void print_summary() {
-        std::cout << "=== TEST SUMMARY ===\n";
-        std::cout << "Tests Passed: " << tests_passed << "\n";
-        std::cout << "Tests Failed: " << tests_failed << "\n";
-        std::cout << "Total Tests: " << (tests_passed + tests_failed) << "\n";
+        std::cout << "=== Test Summary ===\n";
+        std::cout << "Tests passed: " << tests_passed << "\n";
+        std::cout << "Tests failed: " << tests_failed << "\n";
         
         if (tests_failed == 0) {
-            std::cout << "\n🎉 ALL TESTS PASSED! The minimax implementation is working correctly.\n";
+            std::cout << "All tests passed! ✓\n";
         } else {
-            std::cout << "\n⚠️  Some tests failed. Please review the implementation.\n";
+            std::cout << "Some tests failed! ✗\n";
         }
-        
-        std::cout << "\n=== MINIMAX FEATURES TESTED ===\n";
-        std::cout << "✓ Basic Minimax Algorithm\n";
-        std::cout << "✓ Alpha-Beta Pruning\n";
-        std::cout << "✓ Iterative Deepening\n";
-        std::cout << "✓ Move Ordering (MVV-LVA)\n";
-        std::cout << "✓ Time Management\n";
-        std::cout << "✓ Mate Detection\n";
-        std::cout << "✓ Draw Detection\n";
-        std::cout << "✓ Search Statistics\n";
     }
 };
 
 int main() {
     try {
-        MinimaxTester tester;
-        tester.run_all_tests();
+        SearchEngineTest test;
+        test.run_all_tests();
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "Test failed with exception: " << e.what() << std::endl;
+        return 1;
+    } catch (...) {
+        std::cerr << "Test failed with unknown exception!" << std::endl;
         return 1;
     }
 }

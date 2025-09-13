@@ -3,214 +3,330 @@
 
 #include "../board/Board.h"
 #include "../board/Move.h"
-#include "../board/MoveGenerator.h"
 #include "Evaluation.h"
-#include <vector>
+#include <atomic>
 #include <chrono>
+#include <thread>
+#include <vector>
+#include <memory>
+#include <mutex>
 
 /**
- * @brief Chess search engine implementing minimax with alpha-beta pruning
+ * @struct SearchStats
+ * @brief Statistics collected during chess search operations
  * 
- * This class provides a complete chess search implementation using the minimax
- * algorithm with alpha-beta pruning for move selection. It supports iterative
- * deepening, time-limited searches, and basic move ordering for improved performance.
+ * This structure tracks various performance metrics and statistics
+ * during the search process, useful for debugging, profiling, and
+ * engine analysis.
+ */
+struct SearchStats {
+    long long nodes_searched = 0;      ///< Total nodes evaluated
+    long long quiescence_nodes = 0;    ///< Nodes searched in quiescence
+    long long tt_hits = 0;             ///< Transposition table hits
+    long long beta_cutoffs = 0;        ///< Beta cutoffs (useful for profiling)
+    long long null_move_cutoffs = 0;   ///< Null-move pruning cutoffs
+    long long lmr_reductions = 0;      ///< Late move reductions applied
+    
+    /**
+     * @brief Reset all statistics to zero
+     */
+    void clear() { *this = {}; }
+};
+
+/**
+ * @struct SearchResult
+ * @brief Complete result of a chess search operation
+ * 
+ * Contains the best move found, evaluation score, search depth,
+ * performance statistics, and timing information from a search.
+ */
+struct SearchResult {
+    Move best_move;                    ///< Best move found
+    int score = 0;                     ///< Evaluation score (cp or mate score)
+    int depth = 0;                     ///< Search depth reached
+    int sel_depth = 0;                 ///< Selective depth (deepest ply reached)
+    SearchStats stats;                 ///< Collected search statistics
+    std::chrono::milliseconds time_elapsed{0};  ///< Total search time
+};
+
+/**
+ * @class Search
+ * @brief High-performance multithreaded chess search engine
+ * 
+ * This class implements a sophisticated chess search algorithm using:
+ * - Minimax algorithm with alpha-beta pruning
+ * - Iterative deepening for time management
+ * - Multithreading for parallel search
+ * - Cooperative cancellation using atomic stop flags
+ * - Comprehensive search statistics and profiling
+ * 
+ * The search engine supports both time-limited and depth-limited searches,
+ * with four main search function variants for different use cases.
+ * 
+ * @note All search operations are thread-safe and support cooperative
+ *       cancellation without using dangerous thread termination methods.
  */
 class Search {
 public:
     /**
-     * @brief Statistics collected during search operations
-     */
-    struct SearchStats {
-        int nodes_searched = 0;          ///< Total number of nodes evaluated
-        int beta_cutoffs = 0;            ///< Number of beta cutoffs (pruning events)
-        std::chrono::milliseconds time_elapsed{0};  ///< Total search time
-        
-        /**
-         * @brief Reset all statistics to zero
-         */
-        void reset() {
-            nodes_searched = 0;
-            beta_cutoffs = 0;
-            time_elapsed = std::chrono::milliseconds(0);
-        }
-    };
-    
-    /**
-     * @brief Complete result of a search operation
-     */
-    struct SearchResult {
-        Move best_move;          ///< The best move found
-        int score = 0;           ///< Evaluation score of the best move
-        int depth = 0;           ///< Actual search depth reached
-        SearchStats stats;       ///< Search statistics
-        bool is_mate = false;    ///< Whether the result is a forced mate
-        int mate_in = 0;         ///< Number of moves until mate (if is_mate is true)
-    };
-    
-private:
-    MoveGenerator move_generator;     ///< Move generation engine
-    Evaluation* evaluation = nullptr; ///< Position evaluation function
-    SearchStats current_stats;        ///< Current search statistics
-    
-    // Search parameters
-    static constexpr int MAX_DEPTH = 10;
-    static constexpr int MATE_SCORE = 30000;
-    static constexpr int ALPHA_INIT = -31000;
-    static constexpr int BETA_INIT = 31000;
-    
-public:
-    /**
-     * @brief Constructor - initializes search engine
+     * @brief Constructor - initializes search engine with evaluation system
+     * 
+     * Creates a new search engine instance with default parameters.
+     * Initializes the evaluation system, sets up thread management,
+     * and prepares internal data structures.
      */
     Search();
     
     /**
-     * @brief Default destructor
+     * @brief Destructor - ensures clean shutdown of all threads
+     * 
+     * Stops any running search operations and joins all worker threads
+     * to ensure clean shutdown without abandoned threads.
      */
-    ~Search() = default;
+    ~Search();
     
-    // Main search functions - 4 well-documented functions with clear purposes
+    // Main search interface - 4 function variants as required
     
     /**
-     * @brief Find the best move using depth-limited search
+     * @brief Search for the best move without time limit
      * 
-     * Simple search function that returns only the best move found within the specified depth.
-     * Uses iterative deepening for better move ordering and early termination on mate.
+     * Performs a chess search to find the best move in the current position
+     * using iterative deepening. The search continues until a reasonable
+     * depth is reached or manually stopped.
      * 
      * @param board The current board position to search from
-     * @param depth Maximum search depth in plies (half-moves)
-     * @return The best move found, or invalid move if no legal moves exist
+     * @param max_depth Maximum search depth (default: 10)
+     * @return The best move found
+     * 
+     * @note This function may take a long time for complex positions.
+     *       Consider using the time-limited variant for practical use.
      */
-    Move find_best_move(Board& board, int depth);
+    Move search_move(Board& board, int max_depth = 10);
     
     /**
-     * @brief Find the best move using time-limited search
+     * @brief Search for the best move with time limit
      * 
-     * Simple search function that returns only the best move found within the time limit.
-     * Uses iterative deepening and stops when time runs out, returning the best move from
-     * the last completed depth.
+     * Performs a time-limited chess search using iterative deepening.
+     * The search stops when the time limit is reached and returns the
+     * best move found so far.
      * 
      * @param board The current board position to search from
-     * @param time_limit Maximum search time allowed
-     * @return The best move found, or invalid move if no legal moves exist
+     * @param time_limit Maximum time allowed for the search
+     * @param max_depth Maximum search depth (default: 50)
+     * @return The best move found within the time limit
+     * 
+     * @note Always returns a legal move, even if interrupted early.
      */
-    Move find_best_move_timed(Board& board, std::chrono::milliseconds time_limit);
+    Move search_move(Board& board, std::chrono::milliseconds time_limit, int max_depth = 50);
     
     /**
-     * @brief Perform depth-limited search with comprehensive statistics
+     * @brief Search for the best move and return detailed results without time limit
      * 
-     * Advanced search function that returns complete search results including the best move,
-     * evaluation score, search statistics, and mate detection. Ideal for analysis and
-     * debugging purposes.
+     * Performs a comprehensive chess search and returns detailed information
+     * including the best move, evaluation score, search depth, and statistics.
      * 
      * @param board The current board position to search from
-     * @param depth Maximum search depth in plies (half-moves)
-     * @return Complete search results with move, score, statistics, and mate information
+     * @param max_depth Maximum search depth (default: 10)
+     * @return Complete search results including move, score, and statistics
+     * 
+     * @note This function may take a long time for complex positions.
      */
-    SearchResult search_with_stats(Board& board, int depth);
+    SearchResult search(Board& board, int max_depth = 10);
     
     /**
-     * @brief Perform time and depth limited search with comprehensive statistics
+     * @brief Search for the best move and return detailed results with time limit
      * 
-     * Most advanced search function that combines time and depth limits with full statistics.
-     * Returns complete search results including the best move, evaluation score, actual depth
-     * reached, search statistics, and mate detection. Perfect for tournament play and analysis.
+     * Performs a time-limited comprehensive chess search using iterative deepening
+     * and multithreading. Returns detailed results including performance statistics.
      * 
      * @param board The current board position to search from
-     * @param depth Maximum search depth in plies (half-moves)
-     * @param time_limit Maximum search time allowed
-     * @return Complete search results with move, score, statistics, and mate information
-     */
-    SearchResult search_with_stats_timed(Board& board, int depth, std::chrono::milliseconds time_limit);
-    
-    // Configuration
-    /**
-     * @brief Set the evaluation function to use
+     * @param time_limit Maximum time allowed for the search
+     * @param max_depth Maximum search depth (default: 50)
+     * @return Complete search results including move, score, and statistics
      * 
-     * @param eval Pointer to evaluation function (can be nullptr)
+     * @note This is the most comprehensive search function, recommended for
+     *       engine analysis and performance profiling.
      */
-    void set_evaluation(Evaluation* eval) { evaluation = eval; }
+    SearchResult search(Board& board, std::chrono::milliseconds time_limit, int max_depth = 50);
     
     /**
-     * @brief Get current search statistics
+     * @brief Stop any currently running search operation
      * 
-     * @return Copy of current search statistics
+     * Sets the global stop flag to signal all search threads to terminate
+     * cooperatively. This function is thread-safe and can be called from
+     * any thread.
      */
-    SearchStats get_stats() const { return current_stats; }
+    void stop_search();
     
     /**
-     * @brief Reset search statistics to zero
+     * @brief Check if a search operation is currently running
+     * 
+     * @return true if search is active, false otherwise
      */
-    void reset_stats() { current_stats.reset(); }
+    bool is_searching() const;
+    
+    /**
+     * @brief Set the number of threads to use for parallel search
+     * 
+     * Configures the search engine to use the specified number of threads
+     * for parallel search operations. More threads can improve search speed
+     * on multi-core systems.
+     * 
+     * @param num_threads Number of threads to use (1-64, default: 4)
+     * 
+     * @note Changes take effect on the next search operation.
+     *       Using too many threads may decrease performance due to overhead.
+     */
+    void set_thread_count(int num_threads);
+    
+    /**
+     * @brief Get the current number of search threads
+     * 
+     * @return Current number of threads configured for search
+     */
+    int get_thread_count() const;
     
 private:
+    // Core search implementation
+    
     /**
-     * @brief Core minimax algorithm with alpha-beta pruning
+     * @brief Main iterative deepening search loop
      * 
-     * @param board The current board position
+     * Implements the core iterative deepening algorithm that progressively
+     * searches deeper until time runs out or maximum depth is reached.
+     * 
+     * @param board The board position to search
+     * @param max_depth Maximum depth to search
+     * @param result Reference to store search results
+     */
+    void iterative_deepening(Board& board, int max_depth, SearchResult& result);
+    
+    /**
+     * @brief Minimax search with alpha-beta pruning
+     * 
+     * Core minimax algorithm implementation with alpha-beta pruning
+     * for efficient tree search.
+     * 
+     * @param board Current board position
      * @param depth Remaining search depth
      * @param alpha Alpha value for pruning
      * @param beta Beta value for pruning
-     * @param start_time Search start time for time management
-     * @param time_limit Maximum search time allowed
-     * @return Best evaluation score found
+     * @param maximizing_player True if maximizing player's turn
+     * @param stats Reference to search statistics
+     * @param ply Current ply from root (for killer moves)
+     * @return Evaluation score of the position
      */
-    int minimax(Board& board, int depth, int alpha, int beta, 
-                std::chrono::steady_clock::time_point start_time, 
-                std::chrono::milliseconds time_limit);
-    
-    // Helper functions
-    /**
-     * @brief Check if search time limit has been exceeded
-     * 
-     * @param start_time Search start time
-     * @param time_limit Maximum allowed time
-     * @return true if time limit exceeded
-     */
-    bool is_time_up(std::chrono::steady_clock::time_point start_time, 
-                    std::chrono::milliseconds time_limit) const;
+    int minimax(Board& board, int depth, int alpha, int beta, bool maximizing_player, SearchStats& stats, int ply = 0);
     
     /**
-     * @brief Check if score represents a mate position
+     * @brief Quiescence search for tactical stability
      * 
-     * @param score Evaluation score to check
-     * @return true if score indicates mate
-     */
-    bool is_mate_score(int score) const;
-    
-    /**
-     * @brief Calculate distance to mate from mate score
+     * Extends the search in tactical positions to avoid horizon effects
+     * by searching only capture moves until a quiet position is reached.
      * 
-     * @param score Mate evaluation score
-     * @return Number of moves until mate
-     */
-    int mate_distance(int score) const;
-    
-    /**
-     * @brief Check if position is a draw
-     * 
-     * @param board Board position to evaluate
-     * @return true if position is drawn
-     */
-    bool is_draw(const Board& board) const;
-    
-    // Move ordering for better alpha-beta pruning
-    /**
-     * @brief Order moves for better search efficiency
-     * 
-     * @param moves Vector of moves to sort
      * @param board Current board position
+     * @param alpha Alpha value for pruning
+     * @param beta Beta value for pruning
+     * @param maximizing_player True if maximizing player's turn
+     * @param stats Reference to search statistics
+     * @param qs_depth Current quiescence search depth (for limiting)
+     * @return Evaluation score of the quiet position
      */
-    void order_moves(std::vector<Move>& moves, const Board& board);
+    int quiescence_search(Board& board, int alpha, int beta, bool maximizing_player, SearchStats& stats, int qs_depth = 0);
     
     /**
-     * @brief Calculate heuristic score for move ordering
+     * @brief Worker thread function for parallel search
      * 
-     * @param move Move to evaluate
-     * @param board Current board position
-     * @return Heuristic score for move ordering
+     * Each worker thread runs this function to search a portion of the
+     * move tree in parallel with other threads.
+     * 
+     * @param board Reference to the board position to search
+     * @param moves List of moves to search
+     * @param start_idx Starting index in the move list
+     * @param end_idx Ending index in the move list
+     * @param depth Search depth for this worker
+     * @return SearchResult with best move and score found
      */
-    int get_move_score(const Move& move, const Board& board) const;
+    SearchResult search_worker(Board& board, const MoveList& moves, int start_idx, int end_idx, int depth);
+    
+    /**
+     * @brief Time management worker thread
+     * 
+     * Monitors the search time and sets the stop flag when the time
+     * limit is reached, ensuring cooperative cancellation.
+     * 
+     * @param time_limit Maximum time allowed for search
+     */
+    void time_management_worker(std::chrono::milliseconds time_limit);
+    
+    /**
+     * @brief Check if search should stop (cooperative cancellation)
+     * 
+     * Checks the atomic stop flag to determine if the search should
+     * terminate. Called at safe points during search.
+     * 
+     * @return true if search should stop, false to continue
+     */
+    bool should_stop() const;
+    
+    /**
+     * @brief Order moves for better alpha-beta pruning efficiency
+     * 
+     * Sorts the move list to improve the likelihood of early cutoffs
+     * in the alpha-beta search, significantly improving performance.
+     * Captures, killer moves, and history heuristic are used.
+     * 
+     * @param moves List of moves to order
+     * @param board Current board position for move evaluation
+     * @param ply Current ply for killer move lookup
+     */
+    void order_moves(MoveList& moves, Board& board, int ply = 0);
+    
+    /**
+     * @brief Evaluate move priority for ordering
+     * 
+     * Assigns a priority score to a move for ordering purposes.
+     * Higher scores indicate moves that should be searched first.
+     * 
+     * @param move The move to evaluate
+     * @param board Current board position
+     * @param ply Current ply for killer move lookup
+     * @return Priority score for the move
+     */
+    int evaluate_move_priority(const Move& move, Board& board, int ply = 0);
+    
+    // Member variables
+    
+    std::unique_ptr<Evaluation> evaluator;  ///< Position evaluation engine
+    
+    // Thread management
+    std::atomic<bool> stop_flag;            ///< Global stop flag for cooperative cancellation
+    std::atomic<bool> search_active;        ///< Flag indicating if search is running
+    int thread_count;                       ///< Number of threads to use for search
+    std::vector<std::thread> worker_threads; ///< Pool of worker threads
+    std::thread time_manager_thread;        ///< Time management thread
+    
+    // Synchronization
+    mutable std::mutex search_mutex;        ///< Mutex for thread-safe operations
+    mutable std::mutex killer_history_mutex; ///< Mutex for killer moves and history table protection
+    
+    // Search parameters
+    static constexpr int MAX_DEPTH = 64;    ///< Maximum search depth limit
+    static constexpr int MIN_THREADS = 1;   ///< Minimum number of threads
+    static constexpr int MAX_THREADS = 64;  ///< Maximum number of threads
+    
+    // Search constants
+    static constexpr int MATE_SCORE = 30000;     ///< Score representing checkmate
+    static constexpr int DRAW_SCORE = 0;         ///< Score representing a draw
+    static constexpr int INFINITY_SCORE = 32000; ///< Infinity value for alpha-beta
+    static constexpr int MAX_QUIESCENCE_DEPTH = 16; ///< Maximum quiescence search depth
+    static constexpr int KILLER_MOVES_PER_PLY = 2;  ///< Number of killer moves per ply
+    
+    // Killer moves table [ply][killer_index]
+    Move killer_moves[MAX_DEPTH][KILLER_MOVES_PER_PLY];
+    
+    // History heuristic table [from][to]
+    int history_table[64][64];
 };
 
 #endif // SEARCH_H
