@@ -231,7 +231,7 @@ private:
         
         try {
             // Test single-threaded performance
-            search->set_thread_count(2);
+            search->set_thread_count(1);
             auto start_time = std::chrono::steady_clock::now();
             SearchResult single_result = search->search(board, DEFAULT_SEARCH_DEPTH);
             auto end_time = std::chrono::steady_clock::now();
@@ -254,7 +254,7 @@ private:
             assert_test(multi_elapsed.count() > 0, "Multi-threaded search completed");
             
             std::cout << "  === Performance Comparison ===\n";
-            std::cout << "  Single Thread (2): " << single_elapsed.count() << "ms, "
+            std::cout << "  Single Thread (1): " << single_elapsed.count() << "ms, "
                       << single_result.stats.nodes_searched << " nodes, " 
                       << std::fixed << std::setprecision(0) << single_nps << " NPS\n";
             std::cout << "  Multi Thread (4):  " << multi_elapsed.count() << "ms, " 

@@ -187,24 +187,68 @@ void Search::iterative_deepening(Board& board, int max_depth, SearchResult& resu
     result.best_move = legal_moves[0];
     result.depth = 0;
     
-    // Order moves once for all depths using context-based function
-    SearchContext temp_context(board);
-    order_moves_with_context(legal_moves, temp_context, 0);
-    
     // Initialize thread pool
     init_thread_pool();
     
-    // Iterative deepening loop with parallel root search
+    // Iterative deepening loop with aspiration windows and PVS
+    int aspiration_window = 50; // Initial aspiration window size
+    int prev_score = 0;
+    Move pv_move; // Best move from previous iteration
+    
     for (int depth = 1; depth <= max_depth && !should_stop(); ++depth) {
         SearchResult depth_result;
         
-        if (thread_count <= 1 || legal_moves.size() < 2) {
-            // Single-threaded search for small move sets or single thread
-            depth_result = search_worker(board, legal_moves, 0, legal_moves.size(), depth);
+        // Order moves for this depth, using PV move from previous iteration
+        SearchContext temp_context(board);
+        order_moves_with_context(legal_moves, temp_context, 0, pv_move);
+        
+        // Set aspiration window bounds
+        int alpha, beta;
+        if (depth == 1) {
+            // Full window for first depth
+            alpha = -INFINITY_SCORE;
+            beta = INFINITY_SCORE;
         } else {
-            // Parallel root search
-            depth_result = parallel_root_search(board, legal_moves, depth);
+            // Narrow window around previous score
+            alpha = prev_score - aspiration_window;
+            beta = prev_score + aspiration_window;
         }
+        
+        bool search_failed = false;
+        int search_attempts = 0;
+        const int max_attempts = 4;
+        
+        do {
+            search_failed = false;
+            search_attempts++;
+            
+            if (thread_count <= 1 || legal_moves.size() < 2) {
+            // Single-threaded search with aspiration window
+            depth_result = search_worker_with_window(board, legal_moves, 0, legal_moves.size(), depth, alpha, beta);
+        } else {
+            // Parallel root search with aspiration window
+            depth_result = parallel_root_search_with_window(board, legal_moves, depth, alpha, beta);
+        }
+            
+            // Check if search failed high or low
+            if (!should_stop() && depth_result.best_move.is_valid()) {
+                if (depth_result.score <= alpha) {
+                    // Failed low - widen alpha
+                    alpha = -INFINITY_SCORE;
+                    search_failed = true;
+                } else if (depth_result.score >= beta) {
+                    // Failed high - widen beta
+                    beta = INFINITY_SCORE;
+                    search_failed = true;
+                }
+            }
+            
+            // Prevent infinite loop
+            if (search_attempts >= max_attempts) {
+                search_failed = false;
+            }
+            
+        } while (search_failed && !should_stop());
         
         // Update result if depth completed successfully
         if (!should_stop() && depth_result.best_move.is_valid()) {
@@ -212,6 +256,17 @@ void Search::iterative_deepening(Board& board, int max_depth, SearchResult& resu
             result.score = depth_result.score;
             result.depth = depth;
             result.sel_depth = std::max(result.sel_depth, depth);
+            prev_score = depth_result.score;
+            pv_move = depth_result.best_move; // Store PV move for next iteration
+            
+            // Adjust aspiration window for next iteration
+            if (search_attempts == 1) {
+                // Search succeeded on first try - can narrow window
+                aspiration_window = std::max(25, aspiration_window - 5);
+            } else {
+                // Search failed - widen window for next time
+                aspiration_window = std::min(200, aspiration_window + 25);
+            }
             
             // Accumulate statistics
             result.stats.nodes_searched += depth_result.stats.nodes_searched;
@@ -259,6 +314,62 @@ SearchResult Search::search_worker(Board& board, const MoveList& moves, int star
         }
     }
     
+    return result;
+}
+
+// Search worker with aspiration window and PVS
+SearchResult Search::search_worker_with_window(Board& board, const MoveList& moves, int start_idx, int end_idx, int depth, int alpha, int beta) {
+    SearchResult result;
+    result.score = alpha;
+    
+    // Create SearchContext for this worker
+    SearchContext context(board);
+    
+    bool first_move = true;
+    
+    for (int i = start_idx; i < end_idx && i < moves.size(); ++i) {
+        if (should_stop()) break;
+        
+        const Move& move = moves[i];
+        
+        // Make move and get undo data
+        BitboardMoveUndoData undo_data = context.board.apply_move(move);
+        
+        int score;
+        
+        if (first_move) {
+            // Search first move (PV) with full window
+            score = minimax_with_context(context, depth - 1, -beta, -alpha, false, 0);
+            first_move = false;
+        } else {
+            // Search remaining moves with null window (PVS)
+            score = minimax_with_context(context, depth - 1, -alpha - 1, -alpha, false, 0);
+            
+            // If null window search beats alpha, re-search with full window
+            if (score > alpha && score < beta) {
+                score = minimax_with_context(context, depth - 1, -beta, -score, false, 0);
+            }
+        }
+        
+        score = -score; // Negate because we're at root (maximizing)
+        
+        // Undo move
+        context.board.undo_move(undo_data);
+        
+        if (score > result.score) {
+            result.best_move = move;
+            result.score = score;
+            alpha = std::max(alpha, score);
+        }
+        
+        // Beta cutoff at root
+        if (score >= beta) {
+            break;
+        }
+    }
+    
+    // Merge per-thread stats into result
+    result.stats = context.stats;
     return result;
 }
 
@@ -314,6 +425,74 @@ SearchResult Search::parallel_root_search(Board& board, const MoveList& moves, i
                       [this, board, &moves, start_idx, end_idx, depth]() {
                           SearchContext context(board);
                           return parallel_root_worker(context, moves, start_idx, end_idx, depth);
+                      })
+        );
+        
+        start_idx = end_idx;
+    }
+    
+    // Collect results from all threads
+    SearchStats combined_stats;
+    for (auto& future : search_futures) {
+        if (should_stop()) break;
+        
+        try {
+            SearchResult thread_result = future.get();
+            
+            // Update best move if this thread found a better one
+            if (thread_result.best_move.is_valid() && thread_result.score > best_result.score) {
+                best_result.best_move = thread_result.best_move;
+                best_result.score = thread_result.score;
+            }
+            
+            // Accumulate statistics
+            combined_stats.nodes_searched += thread_result.stats.nodes_searched;
+            combined_stats.quiescence_nodes += thread_result.stats.quiescence_nodes;
+            combined_stats.tt_hits += thread_result.stats.tt_hits;
+            combined_stats.beta_cutoffs += thread_result.stats.beta_cutoffs;
+            combined_stats.null_move_cutoffs += thread_result.stats.null_move_cutoffs;
+            combined_stats.lmr_reductions += thread_result.stats.lmr_reductions;
+            
+        } catch (const std::exception& e) {
+            // Handle thread exceptions gracefully
+            continue;
+        }
+    }
+    
+    best_result.stats = combined_stats;
+    best_result.depth = depth;
+    
+    return best_result;
+}
+
+// Parallel root search with aspiration window and PVS
+SearchResult Search::parallel_root_search_with_window(Board& board, const MoveList& moves, int depth, int alpha, int beta) {
+    SearchResult best_result;
+    best_result.score = alpha;
+    
+    // Calculate moves per thread
+    int num_threads = std::min(thread_count, static_cast<int>(moves.size()));
+    int moves_per_thread = moves.size() / num_threads;
+    int remaining_moves = moves.size() % num_threads;
+    
+    // Clear previous futures
+    search_futures.clear();
+    search_futures.reserve(num_threads);
+    
+    // Launch worker threads
+    int start_idx = 0;
+    for (int i = 0; i < num_threads; ++i) {
+        int end_idx = start_idx + moves_per_thread;
+        if (i < remaining_moves) {
+            end_idx++; // Distribute remaining moves to first threads
+        }
+        
+        // Launch async task with board copy (SearchContext created inside worker)
+        search_futures.emplace_back(
+            std::async(std::launch::async, 
+                      [this, &board, &moves, start_idx, end_idx, depth, alpha, beta]() {
+                          Board board_copy = board; // Make a copy for thread safety // FIX: work around unncecessary coppies
+                          return search_worker_with_window(board_copy, moves, start_idx, end_idx, depth, alpha, beta);
                       })
         );
         

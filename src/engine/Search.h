@@ -259,6 +259,23 @@ private:
     SearchResult search_worker(Board& board, const MoveList& moves, int start_idx, int end_idx, int depth);
     
     /**
+     * @brief Worker thread function for parallel search with aspiration window and PVS
+     * 
+     * Each worker thread runs this function to search a portion of the move tree
+     * using Principal Variation Search with aspiration windows for better pruning.
+     * 
+     * @param board Reference to the board position to search
+     * @param moves List of moves to search
+     * @param start_idx Starting index in the move list
+     * @param end_idx Ending index in the move list
+     * @param depth Search depth for this worker
+     * @param alpha Alpha bound for aspiration window
+     * @param beta Beta bound for aspiration window
+     * @return SearchResult with best move and score found
+     */
+    SearchResult search_worker_with_window(Board& board, const MoveList& moves, int start_idx, int end_idx, int depth, int alpha, int beta);
+    
+    /**
      * @brief Parallel root search worker function
      * 
      * Each thread runs this function to search a subset of root moves
@@ -274,6 +291,21 @@ private:
     SearchResult parallel_root_worker(SearchContext& context, const MoveList& moves, int start_idx, int end_idx, int depth);
     
     SearchResult parallel_root_search(Board& board, const MoveList& moves, int depth);
+    
+    /**
+     * @brief Parallel root search with aspiration window and PVS
+     * 
+     * Performs parallel search of root moves using aspiration windows and
+     * Principal Variation Search for improved pruning efficiency.
+     * 
+     * @param board The board position to search
+     * @param moves List of moves to search
+     * @param depth Search depth
+     * @param alpha Alpha bound for aspiration window
+     * @param beta Beta bound for aspiration window
+     * @return SearchResult with best move and score found
+     */
+    SearchResult parallel_root_search_with_window(Board& board, const MoveList& moves, int depth, int alpha, int beta);
     
     /**
      * @brief Initialize the persistent thread pool
