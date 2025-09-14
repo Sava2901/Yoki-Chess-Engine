@@ -27,7 +27,7 @@ private:
     int tests_passed = 0;
     int tests_failed = 0;
     
-    static constexpr int DEFAULT_SEARCH_DEPTH = 3; // Increased with optimizations (killer moves, history heuristic, quiescence depth limit)
+    static constexpr int DEFAULT_SEARCH_DEPTH = 8; // Increased with optimizations (killer moves, history heuristic, quiescence depth limit)
     static constexpr int MULTITHREADING_SEARCH_DEPTH = 5; // Higher depth for performance testing
     static constexpr std::chrono::milliseconds SHORT_TIME_LIMIT{100};
     static constexpr std::chrono::milliseconds MEDIUM_TIME_LIMIT{500};

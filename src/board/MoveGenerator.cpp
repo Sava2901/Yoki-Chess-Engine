@@ -4,7 +4,7 @@
 #include <immintrin.h>  // For PEXT if available
 
 // TODO: Fix optimization similar to this one all around
-// TODO: Replace push_back with emplace_back in possible cases
+// Using emplace_back for better performance - constructs Move objects in-place
 // TODO: Use std::array instead of std::vector where is possible
 // TODO: Identify why the prefetching is not working as expected (less computations per second)
 // Cache optimization macros
@@ -54,8 +54,8 @@ MoveGenerator::MoveGenerator() : nodes_searched(0), moves_generated(0) {
     BitboardUtils::init();
 }
 
-std::vector<Move> MoveGenerator::generate_all_moves(const Board& board) {
-    std::vector<Move> moves;
+MoveList MoveGenerator::generate_all_moves(const Board& board) {
+    MoveList moves;
     moves.reserve(218); // More precise reservation based on average move count
 
     // Prefetch critical board data for better cache performance
@@ -101,9 +101,9 @@ std::vector<Move> MoveGenerator::generate_all_moves(const Board& board) {
     return moves;
 }
 
-std::vector<Move> MoveGenerator::generate_legal_moves(Board& board) {
-    std::vector<Move> pseudo_legal = generate_all_moves(board);
-    std::vector<Move> legal_moves;
+MoveList MoveGenerator::generate_legal_moves(Board& board) {
+    MoveList pseudo_legal = generate_all_moves(board);
+    MoveList legal_moves;
     legal_moves.reserve(pseudo_legal.size());
 
     // Pre-compute check and pin information for faster legality testing
@@ -130,11 +130,11 @@ std::vector<Move> MoveGenerator::generate_legal_moves(Board& board) {
         // Fast legality check using precomputed masks
         if (in_check) {
             if (is_move_legal_in_check(board, move, check_mask, pinned_pieces)) {
-                legal_moves.push_back(move);
+                legal_moves.emplace_back(move);
             }
         } else {
             if (is_legal_move(board, move)) {
-                legal_moves.push_back(move);
+                legal_moves.emplace_back(move);
             }
         }
     }
@@ -145,8 +145,8 @@ std::vector<Move> MoveGenerator::generate_legal_moves(Board& board) {
     return legal_moves;
 }
 
-std::vector<Move> MoveGenerator::generate_captures(const Board& board) {
-    std::vector<Move> moves;
+MoveList MoveGenerator::generate_captures(const Board& board) {
+    MoveList moves;
     moves.reserve(32); // More precise reservation for captures
 
     // Generate captures in MVV-LVA order for better performance
@@ -163,12 +163,12 @@ std::vector<Move> MoveGenerator::generate_captures(const Board& board) {
     return moves;
 }
 
-std::vector<Move> MoveGenerator::generate_tactical_moves(const Board& board) {
-    std::vector<Move> moves;
+MoveList MoveGenerator::generate_tactical_moves(const Board& board) {
+    MoveList moves;
     moves.reserve(32); // Reserve space for tactical moves
 
     // Generate all captures (already includes capture promotions)
-    std::vector<Move> captures = generate_captures(board);
+    MoveList captures = generate_captures(board);
     moves.insert(moves.end(), captures.begin(), captures.end());
 
     // Generate non-capture promotions separately
@@ -199,8 +199,8 @@ std::vector<Move> MoveGenerator::generate_tactical_moves(const Board& board) {
     return moves;
 }
 
-std::vector<Move> MoveGenerator::generate_quiet_moves(const Board& board) {
-    std::vector<Move> moves;
+MoveList MoveGenerator::generate_quiet_moves(const Board& board) {
+    MoveList moves;
     moves.reserve(186); // More precise reservation for quiet moves
 
     // Generate quiet moves (non-captures)
@@ -227,7 +227,7 @@ std::vector<Move> MoveGenerator::generate_quiet_moves(const Board& board) {
     return moves;
 }
 
-void MoveGenerator::generate_pawn_moves(const Board& board, std::vector<Move>& moves, bool captures_only) {
+void MoveGenerator::generate_pawn_moves(const Board& board, MoveList& moves, bool captures_only) {
     Board::Color color = board.get_active_color();
     Board::Color opponent = (color == Board::WHITE) ? Board::BLACK : Board::WHITE;
 
@@ -290,7 +290,7 @@ void MoveGenerator::generate_pawn_moves(const Board& board, std::vector<Move>& m
  * @param moves Vector to append generated moves to
  * @param captures_only If true, only generate capture moves
  */
-void MoveGenerator::generate_knight_moves(const Board& board, std::vector<Move>& moves, bool captures_only) {
+void MoveGenerator::generate_knight_moves(const Board& board, MoveList& moves, bool captures_only) {
     Board::Color color = board.get_active_color();
     Bitboard knights = board.get_piece_bitboard(Board::KNIGHT, color);
     Bitboard own_pieces = board.get_color_bitboard(color);
@@ -329,7 +329,7 @@ void MoveGenerator::generate_knight_moves(const Board& board, std::vector<Move>&
  * @param moves Vector to append generated moves to
  * @param captures_only If true, only generate capture moves
  */
-void MoveGenerator::generate_bishop_moves(const Board& board, std::vector<Move>& moves, bool captures_only) {
+void MoveGenerator::generate_bishop_moves(const Board& board, MoveList& moves, bool captures_only) {
     Board::Color color = board.get_active_color();
     Bitboard bishops = board.get_piece_bitboard(Board::BISHOP, color);
     Bitboard own_pieces = board.get_color_bitboard(color);
@@ -368,7 +368,7 @@ void MoveGenerator::generate_bishop_moves(const Board& board, std::vector<Move>&
     }
 }
 
-void MoveGenerator::generate_rook_moves(const Board& board, std::vector<Move>& moves, bool captures_only) {
+void MoveGenerator::generate_rook_moves(const Board& board, MoveList& moves, bool captures_only) {
     Board::Color color = board.get_active_color();
     Bitboard rooks = board.get_piece_bitboard(Board::ROOK, color);
     Bitboard own_pieces = board.get_color_bitboard(color);
@@ -407,7 +407,7 @@ void MoveGenerator::generate_rook_moves(const Board& board, std::vector<Move>& m
     }
 }
 
-void MoveGenerator::generate_queen_moves(const Board& board, std::vector<Move>& moves, bool captures_only) {
+void MoveGenerator::generate_queen_moves(const Board& board, MoveList& moves, bool captures_only) {
     Board::Color color = board.get_active_color();
     Bitboard queens = board.get_piece_bitboard(Board::QUEEN, color);
     Bitboard own_pieces = board.get_color_bitboard(color);
@@ -448,7 +448,7 @@ void MoveGenerator::generate_queen_moves(const Board& board, std::vector<Move>& 
     }
 }
 
-void MoveGenerator::generate_king_moves(const Board& board, std::vector<Move>& moves, bool captures_only) {
+void MoveGenerator::generate_king_moves(const Board& board, MoveList& moves, bool captures_only) {
     Board::Color color = board.get_active_color();
     int king_square = board.get_king_position(color);
 
@@ -471,7 +471,7 @@ void MoveGenerator::generate_king_moves(const Board& board, std::vector<Move>& m
                            Board::KING, color, board, moves, captures_only);
 }
 
-void MoveGenerator::generate_castling_moves(const Board& board, std::vector<Move>& moves) {
+void MoveGenerator::generate_castling_moves(const Board& board, MoveList& moves) {
     Board::Color color = board.get_active_color();
 
     if (is_in_check(board, color)) return;
@@ -488,7 +488,7 @@ void MoveGenerator::generate_castling_moves(const Board& board, std::vector<Move
         castle_move.promotion_piece = '.';
         castle_move.is_en_passant = false;
         castle_move.captured_piece = '.';  // Castling doesn't capture
-        moves.push_back(castle_move);
+        moves.emplace_back(castle_move);
     }
 
     if (can_castle_queenside(board, color)) {
@@ -503,7 +503,7 @@ void MoveGenerator::generate_castling_moves(const Board& board, std::vector<Move
         castle_move.promotion_piece = '.';
         castle_move.is_en_passant = false;
         castle_move.captured_piece = '.';  // Castling doesn't capture
-        moves.push_back(castle_move);
+        moves.emplace_back(castle_move);
     }
 }
 
@@ -516,7 +516,7 @@ void MoveGenerator::generate_castling_moves(const Board& board, std::vector<Move
  * @param board The current board position
  * @param moves Vector to append generated moves to
  */
-void MoveGenerator::generate_en_passant_moves(const Board& board, std::vector<Move>& moves) {
+void MoveGenerator::generate_en_passant_moves(const Board& board, MoveList& moves) {
     if (board.get_en_passant_file() == -1) return;
 
     Board::Color color = board.get_active_color();
@@ -542,7 +542,7 @@ void MoveGenerator::generate_en_passant_moves(const Board& board, std::vector<Mo
             // Set captured piece for en passant (opponent's pawn)
             Board::Color opponent = (color == Board::WHITE) ? Board::BLACK : Board::WHITE;
             en_passant_move.captured_piece = piece_type_to_char(Board::PAWN, opponent);
-            moves.push_back(en_passant_move);
+            moves.emplace_back(en_passant_move);
         }
     }
 
@@ -561,7 +561,7 @@ void MoveGenerator::generate_en_passant_moves(const Board& board, std::vector<Mo
             // Set captured piece for en passant (opponent's pawn)
             Board::Color opponent = (color == Board::WHITE) ? Board::BLACK : Board::WHITE;
             en_passant_move.captured_piece = piece_type_to_char(Board::PAWN, opponent);
-            moves.push_back(en_passant_move);
+            moves.emplace_back(en_passant_move);
         }
     }
 }
@@ -663,7 +663,7 @@ int MoveGenerator::count_moves(const Board& board) {
 }
 
 bool MoveGenerator::has_legal_moves(Board& board) {
-    std::vector<Move> moves = generate_all_moves(board);
+    MoveList moves = generate_all_moves(board);
     for (const Move& move : moves) {
         if (is_legal_move(board, move)) {
             return true;
@@ -674,8 +674,8 @@ bool MoveGenerator::has_legal_moves(Board& board) {
 
 // Helper function implementations
 void MoveGenerator::add_moves_from_bitboard(Bitboard from_square, Bitboard to_squares,
-                                                   Board::PieceType piece_type, Board::Color color,
-                                                   const Board& board, std::vector<Move>& moves, bool captures_only) {
+                                           Board::PieceType piece_type, Board::Color color,
+                                           const Board& board, MoveList& moves, bool captures_only) {
     int from_sq = BitboardUtils::get_lsb_index(from_square);
     int from_rank = BitboardUtils::get_rank(from_sq);
     int from_file = BitboardUtils::get_file(from_sq);
@@ -699,12 +699,12 @@ void MoveGenerator::add_moves_from_bitboard(Bitboard from_square, Bitboard to_sq
         char piece_at_destination = board.get_piece(to_rank, to_file);
         move.captured_piece = (piece_at_destination != '.') ? piece_at_destination : '.';
 
-        moves.push_back(move);
+        moves.emplace_back(move);
     }
 }
 
 void MoveGenerator::add_pawn_moves(int from_square, Bitboard to_squares, Board::Color color,
-                                          const Board& board, std::vector<Move>& moves, bool is_capture) {
+                                   const Board& board, MoveList& moves, bool is_capture) {
     int from_rank = BitboardUtils::get_rank(from_square);
     int from_file = BitboardUtils::get_file(from_square);
 
@@ -733,13 +733,13 @@ void MoveGenerator::add_pawn_moves(int from_square, Bitboard to_squares, Board::
                 move.captured_piece = '.';
             }
 
-            moves.push_back(move);
+            moves.emplace_back(move);
         }
     }
 }
 
 void MoveGenerator::add_promotion_moves(int from_square, int to_square, Board::Color color,
-                                               const Board& board, std::vector<Move>& moves, bool is_capture) {
+                                        const Board& board, MoveList& moves, bool is_capture) {
     int from_rank = BitboardUtils::get_rank(from_square);
     int from_file = BitboardUtils::get_file(from_square);
     int to_rank = BitboardUtils::get_rank(to_square);
@@ -765,7 +765,7 @@ void MoveGenerator::add_promotion_moves(int from_square, int to_square, Board::C
             move.captured_piece = '.';
         }
 
-        moves.push_back(move);
+        moves.emplace_back(move);
     }
 }
 
@@ -841,7 +841,7 @@ bool MoveGenerator::is_promotion_rank(int rank, Board::Color color) {
 }
 
 // Move ordering implementation
-void MoveGenerator::order_moves(std::vector<Move>& moves, const Board& board) {
+void MoveGenerator::order_moves(MoveList& moves, const Board& board) {
     std::sort(moves.begin(), moves.end(), [&](const Move& a, const Move& b) {
         return get_move_score(a, board) > get_move_score(b, board);
     });
@@ -856,7 +856,7 @@ void MoveGenerator::order_moves(std::vector<Move>& moves, const Board& board) {
  * @param moves Vector of capture moves to order (modified in place)
  * @param board The current board position for move evaluation
  */
-void MoveGenerator::order_captures(std::vector<Move>& moves, const Board& board) {
+void MoveGenerator::order_captures(MoveList& moves, const Board& board) {
     std::sort(moves.begin(), moves.end(), [&](const Move& a, const Move& b) {
         return get_capture_score(a, board) > get_capture_score(b, board);
     });

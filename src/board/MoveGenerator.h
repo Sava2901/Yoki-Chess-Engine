@@ -56,9 +56,9 @@ public:
      * for legality (moves that would leave the king in check).
      * 
      * @param board The current board position
-     * @return Vector containing all pseudo-legal moves
+     * @return MoveList containing all pseudo-legal moves
      */
-    std::vector<Move> generate_all_moves(const Board& board);
+    MoveList generate_all_moves(const Board& board);
     /**
      * @brief Generate all legal moves for the current position
      * 
@@ -66,9 +66,9 @@ public:
      * moves that would leave the king in check.
      * 
      * @param board The current board position (non-const for move testing)
-     * @return Vector containing all legal moves
+     * @return MoveList containing all legal moves
      */
-    std::vector<Move> generate_legal_moves(Board& board);
+    MoveList generate_legal_moves(Board& board);
     /**
      * @brief Generate all capture moves for the current position
      * 
@@ -76,9 +76,9 @@ public:
      * en passant captures.
      * 
      * @param board The current board position
-     * @return Vector containing all capture moves
+     * @return MoveList containing all capture moves
      */
-    std::vector<Move> generate_captures(const Board& board);
+    MoveList generate_captures(const Board& board);
     /**
      * @brief Generate all tactical moves for the current position
      * 
@@ -86,9 +86,9 @@ public:
      * for use in quiescence search.
      * 
      * @param board The current board position
-     * @return Vector containing all tactical moves
+     * @return MoveList containing all tactical moves
      */
-    std::vector<Move> generate_tactical_moves(const Board& board);
+    MoveList generate_tactical_moves(const Board& board);
     /**
      * @brief Generate all quiet (non-capture) moves for the current position
      * 
@@ -96,9 +96,9 @@ public:
      * and pawn pushes.
      * 
      * @param board The current board position
-     * @return Vector containing all quiet moves
+     * @return MoveList containing all quiet moves
      */
-    std::vector<Move> generate_quiet_moves(const Board& board);
+    MoveList generate_quiet_moves(const Board& board);
 
     // Specific piece move generation
     /**
@@ -111,7 +111,7 @@ public:
      * @param moves Vector to append generated moves to
      * @param captures_only If true, only generate capture moves
      */
-    void generate_pawn_moves(const Board& board, std::vector<Move>& moves, bool captures_only = false);
+    void generate_pawn_moves(const Board& board, MoveList& moves, bool captures_only = false);
     /**
      * @brief Generate all knight moves for the current position
      * 
@@ -121,7 +121,7 @@ public:
      * @param moves Vector to append generated moves to
      * @param captures_only If true, only generate capture moves
      */
-    void generate_knight_moves(const Board& board, std::vector<Move>& moves, bool captures_only = false);
+    void generate_knight_moves(const Board& board, MoveList& moves, bool captures_only = false);
     /**
      * @brief Generate all bishop moves for the current position
      * 
@@ -132,7 +132,7 @@ public:
      * @param moves Vector to append generated moves to
      * @param captures_only If true, only generate capture moves
      */
-    void generate_bishop_moves(const Board& board, std::vector<Move>& moves, bool captures_only = false);
+    void generate_bishop_moves(const Board& board, MoveList& moves, bool captures_only = false);
     /**
      * @brief Generate all rook moves for the current position
      * 
@@ -143,7 +143,7 @@ public:
      * @param moves Vector to append generated moves to
      * @param captures_only If true, only generate capture moves
      */
-    void generate_rook_moves(const Board& board, std::vector<Move>& moves, bool captures_only = false);
+    void generate_rook_moves(const Board& board, MoveList& moves, bool captures_only = false);
     /**
      * @brief Generate all queen moves for the current position
      * 
@@ -154,7 +154,7 @@ public:
      * @param moves Vector to append generated moves to
      * @param captures_only If true, only generate capture moves
      */
-    void generate_queen_moves(const Board& board, std::vector<Move>& moves, bool captures_only = false);
+    void generate_queen_moves(const Board& board, MoveList& moves, bool captures_only = false);
     /**
      * @brief Generate all king moves for the current position
      * 
@@ -165,7 +165,7 @@ public:
      * @param moves Vector to append generated moves to
      * @param captures_only If true, only generate capture moves
      */
-    void generate_king_moves(const Board& board, std::vector<Move>& moves, bool captures_only = false);
+    void generate_king_moves(const Board& board, MoveList& moves, bool captures_only = false);
 
     // Special moves
     /**
@@ -178,7 +178,7 @@ public:
      * @param board The current board position
      * @param moves Vector to append generated moves to
      */
-    void generate_castling_moves(const Board& board, std::vector<Move>& moves);
+    void generate_castling_moves(const Board& board, MoveList& moves);
     /**
      * @brief Generate en passant capture moves for the current position
      * 
@@ -188,7 +188,7 @@ public:
      * @param board The current board position
      * @param moves Vector to append generated moves to
      */
-    void generate_en_passant_moves(const Board& board, std::vector<Move>& moves);
+    void generate_en_passant_moves(const Board& board, MoveList& moves);
 
     // Check and legality testing
     /**
@@ -341,7 +341,7 @@ private:
      */
     void add_moves_from_bitboard(Bitboard from_square, Bitboard to_squares,
                                 Board::PieceType piece_type, Board::Color color,
-                                const Board& board, std::vector<Move>& moves, bool captures_only = false);
+                                const Board& board, MoveList& moves, bool captures_only = false);
 
     /**
      * @brief Add pawn moves with special handling for promotions
@@ -357,7 +357,7 @@ private:
      * @param is_capture True if this is a capture move
      */
     void add_pawn_moves(int from_square, Bitboard to_squares, Board::Color color,
-                       const Board& board, std::vector<Move>& moves, bool is_capture = false);
+                       const Board& board, MoveList& moves, bool is_capture = false);
 
     /**
      * @brief Add all promotion moves for a pawn reaching the back rank
@@ -373,7 +373,7 @@ private:
      * @param is_capture True if this is a capture promotion
      */
     void add_promotion_moves(int from_square, int to_square, Board::Color color,
-                            const Board& board, std::vector<Move>& moves, bool is_capture = false);
+                            const Board& board, MoveList& moves, bool is_capture = false);
 
     // Castling helpers
     /**
@@ -483,7 +483,7 @@ private:
      * @param moves Vector of moves to order
      * @param board The current board position
      */
-    void order_moves(std::vector<Move>& moves, const Board& board);
+    void order_moves(MoveList& moves, const Board& board);
     /**
      * @brief Order capture moves by Most Valuable Victim - Least Valuable Attacker
      * 
@@ -493,7 +493,7 @@ private:
      * @param moves Vector of capture moves to order
      * @param board The current board position
      */
-    void order_captures(std::vector<Move>& moves, const Board& board);
+    void order_captures(MoveList& moves, const Board& board);
     /**
      * @brief Get a heuristic score for move ordering
      * 

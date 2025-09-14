@@ -5,6 +5,7 @@
 #include <vector>
 #include <iostream>
 #include <cstdint>
+#include "SmallVector.h"
 
 /**
  * @brief Structure representing a chess move
@@ -256,9 +257,10 @@ private:
 /**
  * @brief Type alias for a list of moves
  * 
- * Convenient alias for std::vector<Move> used throughout the codebase
- * to represent collections of chess moves.
+ * Uses SmallVector optimization with fixed-size buffer for typical move counts
+ * (~32 moves) to avoid heap allocations in the common case. Falls back to
+ * heap storage for larger collections (max legal moves ~218 in chess).
  */
-using MoveList = std::vector<Move>;
+using MoveList = SmallVector<Move, 32>;
 
 #endif // MOVE_H

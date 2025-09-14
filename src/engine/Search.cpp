@@ -58,7 +58,7 @@ SearchResult Search::search(Board& board, int max_depth) {
     result.stats.clear();
     
     // Get legal moves to ensure we have at least one move to return
-    MoveGenerator move_gen;
+    thread_local MoveGenerator move_gen;
     try {
         MoveList legal_moves = move_gen.generate_legal_moves(board);
         if (legal_moves.empty()) {
@@ -80,7 +80,7 @@ SearchResult Search::search(Board& board, int max_depth) {
     } catch (...) {
         // Ensure we always have a valid move
         if (!result.best_move.is_valid()) {
-            MoveGenerator move_gen;
+            thread_local MoveGenerator move_gen;
             MoveList legal_moves = move_gen.generate_legal_moves(board);
             if (!legal_moves.empty()) {
                 result.best_move = legal_moves[0];
@@ -105,7 +105,7 @@ SearchResult Search::search(Board& board, std::chrono::milliseconds time_limit, 
     result.stats.clear();
     
     // Get legal moves to ensure we have at least one move to return
-    MoveGenerator move_gen;
+    thread_local MoveGenerator move_gen;
     try {
         MoveList legal_moves = move_gen.generate_legal_moves(board);
         if (legal_moves.empty()) {
@@ -130,7 +130,7 @@ SearchResult Search::search(Board& board, std::chrono::milliseconds time_limit, 
     } catch (...) {
         // Ensure we always have a valid move
         if (!result.best_move.is_valid()) {
-            MoveGenerator move_gen;
+            thread_local MoveGenerator move_gen;
             MoveList legal_moves = move_gen.generate_legal_moves(board);
             if (!legal_moves.empty()) {
                 result.best_move = legal_moves[0];
@@ -174,7 +174,8 @@ int Search::get_thread_count() const {
 // Core search implementation
 
 void Search::iterative_deepening(Board& board, int max_depth, SearchResult& result) {
-    MoveGenerator move_gen;
+    // Use thread-local MoveGenerator to avoid repeated instantiation
+    thread_local MoveGenerator move_gen;
     MoveList legal_moves = move_gen.generate_legal_moves(board);
     
     if (legal_moves.empty()) {
@@ -587,6 +588,14 @@ SearchResult Search::parallel_root_worker(SearchContext& context, const MoveList
     return result;
 }
 
+// Helper function to check if position has non-pawn material
+bool Search::has_non_pawn_material(const Board& board, Board::Color color) const {
+    return (board.get_piece_bitboard(Board::KNIGHT, color) |
+            board.get_piece_bitboard(Board::BISHOP, color) |
+            board.get_piece_bitboard(Board::ROOK, color) |
+            board.get_piece_bitboard(Board::QUEEN, color)) != 0;
+}
+
 // Helper minimax function that uses SearchContext instead of global data
 int Search::minimax_with_context(SearchContext& context, int depth, int alpha, int beta, bool maximizing_player, int ply) {
     if (should_stop() || depth <= 0) {
@@ -604,6 +613,30 @@ int Search::minimax_with_context(SearchContext& context, int depth, int alpha, i
         beta = std::min(beta, MATE_SCORE - ply - 1);
         if (alpha >= beta) {
             return alpha;
+        }
+    }
+    
+    // Use MoveGenerator from SearchContext to avoid repeated instantiation
+    Board::Color active_color = context.board.get_active_color();
+    bool in_check = context.move_generator.is_in_check(context.board, active_color);
+    
+    // Null-move pruning
+    if (!in_check && ply > 0 && depth >= 3 && 
+        beta < MATE_SCORE - 1000 && beta > -MATE_SCORE + 1000 &&
+        has_non_pawn_material(context.board, active_color)) {
+        
+        // Make null move
+        context.board.set_active_color(active_color == Board::WHITE ? Board::BLACK : Board::WHITE);
+        
+        // Search with reduced depth (R=2)
+        int null_score = -minimax_with_context(context, depth - 1 - 2, -beta, -beta + 1, !maximizing_player, ply + 1);
+        
+        // Undo null move
+        context.board.set_active_color(active_color);
+        
+        if (null_score >= beta) {
+            context.stats.null_move_cutoffs++;
+            return beta;
         }
     }
     
@@ -645,13 +678,12 @@ int Search::minimax_with_context(SearchContext& context, int depth, int alpha, i
         tt_move.from_uint32(tt_entry.move);
     }
     
-    // Generate moves
-    MoveGenerator move_gen;
-    MoveList legal_moves = move_gen.generate_legal_moves(context.board);
+    // Generate moves using context's MoveGenerator
+    MoveList legal_moves = context.move_generator.generate_legal_moves(context.board);
     
     if (legal_moves.empty()) {
         // No legal moves - checkmate or stalemate
-        if (move_gen.is_in_check(context.board, context.board.get_active_color())) {
+        if (context.move_generator.is_in_check(context.board, context.board.get_active_color())) {
             return -MATE_SCORE + ply; // Checkmate
         } else {
             return DRAW_SCORE; // Stalemate
@@ -667,13 +699,36 @@ int Search::minimax_with_context(SearchContext& context, int depth, int alpha, i
     
     if (maximizing_player) {
         best_score = -INFINITY_SCORE;
+        int move_count = 0;
         
         for (const Move& move : legal_moves) {
             if (should_stop()) break;
             
+            move_count++;
             BitboardMoveUndoData undo_data = context.board.apply_move(move);
             
-            int eval = minimax_with_context(context, depth - 1, alpha, beta, false, ply + 1);
+            int eval;
+            
+            // Late Move Reductions (LMR)
+            if (move_count > 4 && depth >= 3 && !move.is_capture() && 
+                !move.is_promotion() && !context.move_generator.is_in_check(context.board, context.board.get_active_color()) &&
+                move != context.killer_moves[0][ply] && move != context.killer_moves[1][ply]) {
+                
+                // Calculate reduction
+                int reduction = 1 + (depth > 6 ? 1 : 0) + (move_count > 6 ? 1 : 0);
+                context.stats.lmr_reductions++;
+                
+                // Search with reduced depth
+                eval = minimax_with_context(context, depth - 1 - reduction, alpha, beta, false, ply + 1);
+                
+                // If reduced search beats alpha, re-search with full depth
+                if (eval > alpha) {
+                    eval = minimax_with_context(context, depth - 1, alpha, beta, false, ply + 1);
+                }
+            } else {
+                // Normal full-depth search
+                eval = minimax_with_context(context, depth - 1, alpha, beta, false, ply + 1);
+            }
             
             context.board.undo_move(undo_data);
             
@@ -708,13 +763,36 @@ int Search::minimax_with_context(SearchContext& context, int depth, int alpha, i
                     (best_score >= beta) ? TTEntryType::LOWER_BOUND : TTEntryType::EXACT;
     } else {
         best_score = INFINITY_SCORE;
+        int move_count = 0;
         
         for (const Move& move : legal_moves) {
             if (should_stop()) break;
             
+            move_count++;
             BitboardMoveUndoData undo_data = context.board.apply_move(move);
             
-            int eval = minimax_with_context(context, depth - 1, alpha, beta, true, ply + 1);
+            int eval;
+            
+            // Late Move Reductions (LMR)
+            if (move_count > 4 && depth >= 3 && !move.is_capture() && 
+                !move.is_promotion() && !context.move_generator.is_in_check(context.board, context.board.get_active_color()) &&
+                move != context.killer_moves[0][ply] && move != context.killer_moves[1][ply]) {
+                
+                // Calculate reduction
+                int reduction = 1 + (depth > 6 ? 1 : 0) + (move_count > 6 ? 1 : 0);
+                context.stats.lmr_reductions++;
+                
+                // Search with reduced depth
+                eval = minimax_with_context(context, depth - 1 - reduction, alpha, beta, true, ply + 1);
+                
+                // If reduced search beats beta, re-search with full depth
+                if (eval < beta) {
+                    eval = minimax_with_context(context, depth - 1, alpha, beta, true, ply + 1);
+                }
+            } else {
+                // Normal full-depth search
+                eval = minimax_with_context(context, depth - 1, alpha, beta, true, ply + 1);
+            }
             
             context.board.undo_move(undo_data);
             
@@ -787,9 +865,8 @@ int Search::quiescence_search_with_context(SearchContext& context, int alpha, in
         beta = std::min(beta, stand_pat);
     }
     
-    // Generate tactical moves (captures, promotions) efficiently
-    MoveGenerator move_gen;
-    MoveList tactical_moves = move_gen.generate_tactical_moves(context.board);
+    // Generate tactical moves (captures, promotions) efficiently using context's MoveGenerator
+    MoveList tactical_moves = context.move_generator.generate_tactical_moves(context.board);
     
     if (tactical_moves.empty()) {
         return stand_pat;

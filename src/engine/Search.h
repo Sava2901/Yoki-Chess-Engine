@@ -3,6 +3,7 @@
 
 #include "../board/Board.h"
 #include "../board/Move.h"
+#include "../board/MoveGenerator.h"
 #include "Evaluation.h"
 #include "../board/TranspositionTable.h"
 #include <atomic>
@@ -63,6 +64,7 @@ struct SearchContext {
     SearchStats stats;              ///< Per-thread search statistics
     Move killer_moves[2][64];       ///< Per-thread killer move table [depth][slot]
     int history_table[2][64][64];   ///< Per-thread history heuristic table [color][from][to]
+    MoveGenerator move_generator;   ///< Thread-local move generator to avoid repeated instantiation
     
     /**
      * @brief Constructor that initializes the context with a board copy
@@ -327,6 +329,9 @@ private:
     int quiescence_search_with_context(SearchContext& context, int alpha, int beta, bool maximizing_player, int qs_depth = 0);
     void order_moves_with_context(MoveList& moves, SearchContext& context, int ply, const Move& tt_move = Move());
     int evaluate_move_priority_with_context(const Move& move, const SearchContext& context, int ply, const Move& tt_move);
+    
+    // Helper functions for search optimizations
+    bool has_non_pawn_material(const Board& board, Board::Color color) const;
     
     /**
      * @brief Time management worker thread

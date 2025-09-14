@@ -423,7 +423,7 @@ bool Board::is_move_valid(const Move& move) const {
 
 bool Board::is_move_legal(const Move& move) {
     MoveGenerator generator;
-    std::vector<Move> legal_moves = generator.generate_legal_moves(*this);
+    MoveList legal_moves = generator.generate_legal_moves(*this);
     return std::any_of(legal_moves.begin(), legal_moves.end(), [&](const Move& m) {
         return m == move;
     });
