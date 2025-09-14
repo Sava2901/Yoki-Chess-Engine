@@ -5,6 +5,8 @@
 #include "Move.h"
 #include <string>
 #include <array>
+#include <cstdint>
+#include <random>
 
 // Forward declaration
 struct BitboardMoveUndoData;
@@ -50,6 +52,16 @@ private:
     int halfmove_clock;
     int fullmove_number;
     
+    // Zobrist hashing
+    uint64_t zobrist_hash;   ///< Current Zobrist hash of the position
+    
+    // Static Zobrist hash tables
+    static uint64_t zobrist_pieces[2][6][64];  ///< [color][piece_type][square]
+    static uint64_t zobrist_castling[16];      ///< [castling_rights]
+    static uint64_t zobrist_en_passant[8];     ///< [file]
+    static uint64_t zobrist_side_to_move;      ///< XOR when black to move
+    static bool zobrist_initialized;           ///< Flag to ensure one-time initialization
+    
     // King positions for quick access
     std::array<int, NUM_COLORS> king_positions{};
     
@@ -75,6 +87,41 @@ public:
      * - Piece mailbox filled with empty squares ('.')
      */
     Board();
+    
+    /**
+     * @brief Copy constructor for fast Board copying
+     * 
+     * Creates a deep copy of another Board instance using optimized
+     * memory operations. This is essential for parallel search where
+     * each thread needs its own Board copy to avoid contention.
+     * 
+     * Uses memcpy for fast copying of bitboard arrays and other
+     * fixed-size data structures.
+     * 
+     * @param other The Board instance to copy from
+     */
+    Board(const Board& other);
+    
+    /**
+     * @brief Assignment operator for Board copying
+     * 
+     * Assigns the state of another Board to this instance using
+     * optimized memory operations.
+     * 
+     * @param other The Board instance to copy from
+     * @return Reference to this Board instance
+     */
+    Board& operator=(const Board& other);
+    
+    /**
+     * @brief Fast clone method for creating Board copies
+     * 
+     * Creates a new Board instance that is an exact copy of this one.
+     * Optimized for performance in parallel search scenarios.
+     * 
+     * @return A new Board instance that is a copy of this one
+     */
+    Board clone() const;
     
     // Board setup
     /**
@@ -243,6 +290,17 @@ public:
     void set_castling_rights(uint8_t rights) { castling_rights = rights; }
     
     [[nodiscard]] int8_t get_en_passant_file() const { return en_passant_file; }
+    
+    /**
+     * @brief Get the current Zobrist hash of the position
+     * 
+     * Returns the 64-bit Zobrist hash that uniquely identifies the current
+     * board position, including piece placement, active color, castling rights,
+     * and en passant availability.
+     * 
+     * @return 64-bit Zobrist hash of the current position
+     */
+    uint64_t get_zobrist_hash() const { return zobrist_hash; }
     void set_en_passant_file(int8_t file) { en_passant_file = file; }
     
     [[nodiscard]] int get_halfmove_clock() const { return halfmove_clock; }
@@ -465,6 +523,41 @@ private:
      */
     void update_combined_bitboards();
     
+    // Zobrist hashing functionality
+    
+    /**
+     * @brief Initialize Zobrist hash tables with random 64-bit values
+     * 
+     * This method initializes the static Zobrist hash tables used for
+     * position hashing. It should be called once at program startup.
+     */
+    static void init_zobrist_tables();
+    
+    /**
+     * @brief Calculate the full Zobrist hash for the current position
+     * 
+     * Computes the complete Zobrist hash by XORing hash values for:
+     * - All pieces on their squares
+     * - Active color
+     * - Castling rights
+     * - En passant file (if any)
+     * 
+     * @return 64-bit Zobrist hash of the current position
+     */
+    uint64_t calculate_zobrist_hash() const;
+    
+    /**
+     * @brief Update Zobrist hash incrementally when making a move
+     * 
+     * Updates the current Zobrist hash by XORing out old values and
+     * XORing in new values for the changed position elements.
+     * 
+     * @param move The move being applied
+     * @param old_castling_rights Previous castling rights
+     * @param old_en_passant_file Previous en passant file (-1 if none)
+     */
+    void update_zobrist_hash(const Move& move, uint8_t old_castling_rights, int old_en_passant_file);
+    
     /**
      * @brief Updates the cached king position for the specified color
      * 
@@ -510,9 +603,10 @@ struct BitboardMoveUndoData {
     uint8_t castling_rights;
     int8_t en_passant_file;
     int halfmove_clock;
+    uint64_t zobrist_hash;
     
     BitboardMoveUndoData() : captured_piece('.'), castling_rights(0), 
-                            en_passant_file(-1), halfmove_clock(0) {}
+                            en_passant_file(-1), halfmove_clock(0), zobrist_hash(0) {}
 };
 
 #endif // BITBOARD_BOARD_H

@@ -163,6 +163,42 @@ std::vector<Move> MoveGenerator::generate_captures(const Board& board) {
     return moves;
 }
 
+std::vector<Move> MoveGenerator::generate_tactical_moves(const Board& board) {
+    std::vector<Move> moves;
+    moves.reserve(32); // Reserve space for tactical moves
+
+    // Generate all captures (already includes capture promotions)
+    std::vector<Move> captures = generate_captures(board);
+    moves.insert(moves.end(), captures.begin(), captures.end());
+
+    // Generate non-capture promotions separately
+    Board::Color color = board.get_active_color();
+    Bitboard pawns = board.get_piece_bitboard(Board::PAWN, color);
+    Bitboard all_pieces = board.get_all_pieces();
+    
+    int direction = (color == Board::WHITE) ? 1 : -1;
+    int promotion_rank = (color == Board::WHITE) ? 7 : 0;
+    
+    while (pawns) {
+        int from_square = BitboardUtils::pop_lsb(pawns);
+        int from_rank = BitboardUtils::get_rank(from_square);
+        int from_file = BitboardUtils::get_file(from_square);
+        
+        // Check if pawn can promote with a non-capture move
+        if (from_rank == promotion_rank - direction) {
+            int to_square = BitboardUtils::square_index(promotion_rank, from_file);
+            if (!BitboardUtils::get_bit(all_pieces, to_square)) {
+                // Add non-capture promotion moves
+                Bitboard promotion_target = 0;
+                BitboardUtils::set_bit(promotion_target, to_square);
+                add_pawn_moves(from_square, promotion_target, color, board, moves, false);
+            }
+        }
+    }
+
+    return moves;
+}
+
 std::vector<Move> MoveGenerator::generate_quiet_moves(const Board& board) {
     std::vector<Move> moves;
     moves.reserve(186); // More precise reservation for quiet moves

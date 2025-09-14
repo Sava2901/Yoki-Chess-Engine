@@ -4,12 +4,14 @@
 #include "../board/Board.h"
 #include "../board/Move.h"
 #include "Evaluation.h"
+#include "../board/TranspositionTable.h"
 #include <atomic>
 #include <chrono>
 #include <thread>
 #include <vector>
 #include <memory>
 #include <mutex>
+#include <future>
 
 /**
  * @struct SearchStats
@@ -47,6 +49,42 @@ struct SearchResult {
     int sel_depth = 0;                 ///< Selective depth (deepest ply reached)
     SearchStats stats;                 ///< Collected search statistics
     std::chrono::milliseconds time_elapsed{0};  ///< Total search time
+};
+
+/**
+ * @brief Per-thread search context for parallel root search
+ * 
+ * Contains all the data structures that each search thread needs
+ * to operate independently without contention. This includes a
+ * private board copy, per-thread statistics, and local killer/history tables.
+ */
+struct SearchContext {
+    Board board;                    ///< Private board copy for this thread
+    SearchStats stats;              ///< Per-thread search statistics
+    Move killer_moves[2][64];       ///< Per-thread killer move table [depth][slot]
+    int history_table[2][64][64];   ///< Per-thread history heuristic table [color][from][to]
+    
+    /**
+     * @brief Constructor that initializes the context with a board copy
+     * @param original_board The board to copy for this thread
+     */
+    SearchContext(const Board& original_board) : board(original_board), stats() {
+        // Initialize killer moves to invalid moves
+        for (int depth = 0; depth < 64; depth++) {
+            for (int slot = 0; slot < 2; slot++) {
+                killer_moves[slot][depth] = Move();
+            }
+        }
+        
+        // Initialize history table to zeros
+        for (int color = 0; color < 2; color++) {
+            for (int from = 0; from < 64; from++) {
+                for (int to = 0; to < 64; to++) {
+                    history_table[color][from][to] = 0;
+                }
+            }
+        }
+    }
 };
 
 /**
@@ -201,38 +239,9 @@ private:
      */
     void iterative_deepening(Board& board, int max_depth, SearchResult& result);
     
-    /**
-     * @brief Minimax search with alpha-beta pruning
-     * 
-     * Core minimax algorithm implementation with alpha-beta pruning
-     * for efficient tree search.
-     * 
-     * @param board Current board position
-     * @param depth Remaining search depth
-     * @param alpha Alpha value for pruning
-     * @param beta Beta value for pruning
-     * @param maximizing_player True if maximizing player's turn
-     * @param stats Reference to search statistics
-     * @param ply Current ply from root (for killer moves)
-     * @return Evaluation score of the position
-     */
-    int minimax(Board& board, int depth, int alpha, int beta, bool maximizing_player, SearchStats& stats, int ply = 0);
+    // Old minimax declaration removed - using minimax_with_context instead
     
-    /**
-     * @brief Quiescence search for tactical stability
-     * 
-     * Extends the search in tactical positions to avoid horizon effects
-     * by searching only capture moves until a quiet position is reached.
-     * 
-     * @param board Current board position
-     * @param alpha Alpha value for pruning
-     * @param beta Beta value for pruning
-     * @param maximizing_player True if maximizing player's turn
-     * @param stats Reference to search statistics
-     * @param qs_depth Current quiescence search depth (for limiting)
-     * @return Evaluation score of the quiet position
-     */
-    int quiescence_search(Board& board, int alpha, int beta, bool maximizing_player, SearchStats& stats, int qs_depth = 0);
+    // Old quiescence_search declaration removed - using quiescence_search_with_context instead
     
     /**
      * @brief Worker thread function for parallel search
@@ -248,6 +257,44 @@ private:
      * @return SearchResult with best move and score found
      */
     SearchResult search_worker(Board& board, const MoveList& moves, int start_idx, int end_idx, int depth);
+    
+    /**
+     * @brief Parallel root search worker function
+     * 
+     * Each thread runs this function to search a subset of root moves
+     * with its own SearchContext to avoid contention.
+     * 
+     * @param context Per-thread search context with board copy and local data
+     * @param moves List of moves to search
+     * @param start_idx Starting index in the move list for this thread
+     * @param end_idx Ending index in the move list for this thread
+     * @param depth Search depth
+     * @return SearchResult with best move and score found by this thread
+     */
+    SearchResult parallel_root_worker(SearchContext& context, const MoveList& moves, int start_idx, int end_idx, int depth);
+    
+    SearchResult parallel_root_search(Board& board, const MoveList& moves, int depth);
+    
+    /**
+     * @brief Initialize the persistent thread pool
+     * 
+     * Creates and starts the worker threads that will be reused
+     * across multiple search operations.
+     */
+    void init_thread_pool();
+    
+    /**
+     * @brief Shutdown the persistent thread pool
+     * 
+     * Stops all worker threads and cleans up resources.
+     */
+    void shutdown_thread_pool();
+    
+    // Context-based search methods for thread safety
+    int minimax_with_context(SearchContext& context, int depth, int alpha, int beta, bool maximizing_player, int ply);
+    int quiescence_search_with_context(SearchContext& context, int alpha, int beta, bool maximizing_player, int qs_depth = 0);
+    void order_moves_with_context(MoveList& moves, SearchContext& context, int ply, const Move& tt_move = Move());
+    int evaluate_move_priority_with_context(const Move& move, const SearchContext& context, int ply, const Move& tt_move);
     
     /**
      * @brief Time management worker thread
@@ -269,35 +316,12 @@ private:
      */
     bool should_stop() const;
     
-    /**
-     * @brief Order moves for better alpha-beta pruning efficiency
-     * 
-     * Sorts the move list to improve the likelihood of early cutoffs
-     * in the alpha-beta search, significantly improving performance.
-     * Captures, killer moves, and history heuristic are used.
-     * 
-     * @param moves List of moves to order
-     * @param board Current board position for move evaluation
-     * @param ply Current ply for killer move lookup
-     */
-    void order_moves(MoveList& moves, Board& board, int ply = 0);
-    
-    /**
-     * @brief Evaluate move priority for ordering
-     * 
-     * Assigns a priority score to a move for ordering purposes.
-     * Higher scores indicate moves that should be searched first.
-     * 
-     * @param move The move to evaluate
-     * @param board Current board position
-     * @param ply Current ply for killer move lookup
-     * @return Priority score for the move
-     */
-    int evaluate_move_priority(const Move& move, Board& board, int ply = 0);
+    // Old order_moves and evaluate_move_priority declarations removed - using context-based versions instead
     
     // Member variables
     
     std::unique_ptr<Evaluation> evaluator;  ///< Position evaluation engine
+    TranspositionTable transposition_table; ///< Transposition table for caching search results
     
     // Thread management
     std::atomic<bool> stop_flag;            ///< Global stop flag for cooperative cancellation
@@ -306,9 +330,12 @@ private:
     std::vector<std::thread> worker_threads; ///< Pool of worker threads
     std::thread time_manager_thread;        ///< Time management thread
     
+    // Parallel root search components
+    std::atomic<bool> thread_pool_active;   ///< Flag indicating if thread pool is running
+    std::vector<std::future<SearchResult>> search_futures; ///< Futures for collecting parallel search results
+    
     // Synchronization
     mutable std::mutex search_mutex;        ///< Mutex for thread-safe operations
-    mutable std::mutex killer_history_mutex; ///< Mutex for killer moves and history table protection
     
     // Search parameters
     static constexpr int MAX_DEPTH = 64;    ///< Maximum search depth limit
@@ -321,12 +348,6 @@ private:
     static constexpr int INFINITY_SCORE = 32000; ///< Infinity value for alpha-beta
     static constexpr int MAX_QUIESCENCE_DEPTH = 16; ///< Maximum quiescence search depth
     static constexpr int KILLER_MOVES_PER_PLY = 2;  ///< Number of killer moves per ply
-    
-    // Killer moves table [ply][killer_index]
-    Move killer_moves[MAX_DEPTH][KILLER_MOVES_PER_PLY];
-    
-    // History heuristic table [from][to]
-    int history_table[64][64];
 };
 
 #endif // SEARCH_H

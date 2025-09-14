@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <iostream>
+#include <cstdint>
 
 /**
  * @brief Structure representing a chess move
@@ -158,6 +159,97 @@ struct Move {
      */
     bool operator!=(const Move& other) const {
         return !(*this == other);
+    }
+    
+    /**
+     * @brief Convert move to uint32_t for transposition table storage
+     * 
+     * Packs the move information into a 32-bit integer for efficient storage.
+     * Format: from_square(6) | to_square(6) | piece(4) | captured_piece(4) | 
+     *         promotion_piece(4) | flags(8)
+     * 
+     * @return 32-bit representation of the move
+     */
+    uint32_t to_uint32() const {
+        uint32_t result = 0;
+        
+        // Pack coordinates (6 bits each)
+        result |= (from_rank * 8 + from_file) & 0x3F;           // bits 0-5
+        result |= ((to_rank * 8 + to_file) & 0x3F) << 6;        // bits 6-11
+        
+        // Pack piece types (4 bits each)
+        result |= (piece_to_int(piece) & 0xF) << 12;             // bits 12-15
+        result |= (piece_to_int(captured_piece) & 0xF) << 16;    // bits 16-19
+        result |= (piece_to_int(promotion_piece) & 0xF) << 20;   // bits 20-23
+        
+        // Pack flags (8 bits)
+        uint32_t flags = 0;
+        if (is_castling) flags |= 1;
+        if (is_en_passant) flags |= 2;
+        result |= (flags & 0xFF) << 24;                          // bits 24-31
+        
+        return result;
+    }
+    
+    /**
+     * @brief Reconstruct move from uint32_t representation
+     * 
+     * Unpacks a move from its 32-bit representation stored in the transposition table.
+     * 
+     * @param packed The 32-bit packed move representation
+     */
+    void from_uint32(uint32_t packed) {
+        // Unpack coordinates
+        uint32_t from_square = packed & 0x3F;
+        uint32_t to_square = (packed >> 6) & 0x3F;
+        
+        from_rank = from_square / 8;
+        from_file = from_square % 8;
+        to_rank = to_square / 8;
+        to_file = to_square % 8;
+        
+        // Unpack pieces
+        piece = int_to_piece((packed >> 12) & 0xF);
+        captured_piece = int_to_piece((packed >> 16) & 0xF);
+        promotion_piece = int_to_piece((packed >> 20) & 0xF);
+        
+        // Unpack flags
+        uint32_t flags = (packed >> 24) & 0xFF;
+        is_castling = (flags & 1) != 0;
+        is_en_passant = (flags & 2) != 0;
+    }
+    
+private:
+    /**
+     * @brief Convert piece character to integer for packing
+     */
+    static uint32_t piece_to_int(char piece) {
+        switch (piece) {
+            case '.': return 0;
+            case 'P': return 1; case 'p': return 2;
+            case 'N': return 3; case 'n': return 4;
+            case 'B': return 5; case 'b': return 6;
+            case 'R': return 7; case 'r': return 8;
+            case 'Q': return 9; case 'q': return 10;
+            case 'K': return 11; case 'k': return 12;
+            default: return 0;
+        }
+    }
+    
+    /**
+     * @brief Convert integer back to piece character for unpacking
+     */
+    static char int_to_piece(uint32_t value) {
+        switch (value) {
+            case 0: return '.';
+            case 1: return 'P'; case 2: return 'p';
+            case 3: return 'N'; case 4: return 'n';
+            case 5: return 'B'; case 6: return 'b';
+            case 7: return 'R'; case 8: return 'r';
+            case 9: return 'Q'; case 10: return 'q';
+            case 11: return 'K'; case 12: return 'k';
+            default: return '.';
+        }
     }
 };
 

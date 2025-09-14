@@ -80,6 +80,16 @@ public:
      */
     std::vector<Move> generate_captures(const Board& board);
     /**
+     * @brief Generate all tactical moves for the current position
+     * 
+     * Generates captures and promotions (including non-capture promotions)
+     * for use in quiescence search.
+     * 
+     * @param board The current board position
+     * @return Vector containing all tactical moves
+     */
+    std::vector<Move> generate_tactical_moves(const Board& board);
+    /**
      * @brief Generate all quiet (non-capture) moves for the current position
      * 
      * Generates moves that do not capture pieces, including castling

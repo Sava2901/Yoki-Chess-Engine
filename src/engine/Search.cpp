@@ -5,30 +5,24 @@
 #include <random>
 #include <cassert>
 
+// TODO: Timed functions still does not work
+// TODO: Depth above 3 freezes the search
+
 // Constructor
 Search::Search() 
     : evaluator(std::make_unique<Evaluation>()),
       stop_flag(false),
       search_active(false),
-      thread_count(4) {
-    // Initialize killer moves table
-    for (int i = 0; i < MAX_DEPTH; ++i) {
-        for (int j = 0; j < KILLER_MOVES_PER_PLY; ++j) {
-            killer_moves[i][j] = Move(); // Default constructor creates invalid move
-        }
-    }
-    
-    // Initialize history table
-    for (int i = 0; i < 64; ++i) {
-        for (int j = 0; j < 64; ++j) {
-            history_table[i][j] = 0;
-        }
-    }
+      thread_count(4),
+      thread_pool_active(false) {
+    // Constructor now only initializes basic members
+    // Killer moves and history tables are now per-thread in SearchContext
 }
 
 // Destructor
 Search::~Search() {
     stop_search();
+    shutdown_thread_pool();
     
     // Join any active threads
     if (time_manager_thread.joinable()) {
@@ -193,12 +187,24 @@ void Search::iterative_deepening(Board& board, int max_depth, SearchResult& resu
     result.best_move = legal_moves[0];
     result.depth = 0;
     
-    // Order moves once for all depths
-    order_moves(legal_moves, board);
+    // Order moves once for all depths using context-based function
+    SearchContext temp_context(board);
+    order_moves_with_context(legal_moves, temp_context, 0);
     
-    // Iterative deepening loop
+    // Initialize thread pool
+    init_thread_pool();
+    
+    // Iterative deepening loop with parallel root search
     for (int depth = 1; depth <= max_depth && !should_stop(); ++depth) {
-        SearchResult depth_result = search_worker(board, legal_moves, 0, legal_moves.size(), depth);
+        SearchResult depth_result;
+        
+        if (thread_count <= 1 || legal_moves.size() < 2) {
+            // Single-threaded search for small move sets or single thread
+            depth_result = search_worker(board, legal_moves, 0, legal_moves.size(), depth);
+        } else {
+            // Parallel root search
+            depth_result = parallel_root_search(board, legal_moves, depth);
+        }
         
         // Update result if depth completed successfully
         if (!should_stop() && depth_result.best_move.is_valid()) {
@@ -223,216 +229,16 @@ void Search::iterative_deepening(Board& board, int max_depth, SearchResult& resu
     }
 }
 
-int Search::minimax(Board& board, int depth, int alpha, int beta, bool maximizing_player, SearchStats& stats, int ply) {
-    stats.nodes_searched++;
-    
-    // Check stop condition at safe points
-    if (stats.nodes_searched % 1000 == 0 && should_stop()) {
-        return 0;
-    }
-    
-    // Prevent stack overflow by limiting maximum ply depth
-    if (ply >= MAX_DEPTH) {
-        return evaluator->evaluate(board);
-    }
-    
-    // Terminal node - evaluate position
-    if (depth == 0) {
-        return quiescence_search(board, alpha, beta, maximizing_player, stats, 0);
-    }
-    
-    MoveGenerator move_gen;
-    MoveList moves = move_gen.generate_legal_moves(board);
-    
-    if (moves.empty()) {
-        // No legal moves - checkmate or stalemate
-        if (board.is_in_check(board.get_active_color())) {
-            // Checkmate: return mate score adjusted by depth
-            // Closer mates are better/worse depending on perspective
-            return maximizing_player ? (-MATE_SCORE + depth) : (MATE_SCORE - depth);
-        } else {
-            // Stalemate: draw
-            return 0;
-        }
-    }
-    
-    // Order moves for better pruning
-    order_moves(moves, board, ply);
-    
-    if (maximizing_player) {
-        int max_eval = -INFINITY_SCORE;
-        
-        for (const Move& move : moves) {
-            if (should_stop()) break;
-            
-            // Make move and get undo data
-            BitboardMoveUndoData undo_data = board.apply_move(move);
-            
-            int eval = minimax(board, depth - 1, alpha, beta, false, stats, ply + 1);
-            
-            // Undo move
-            board.undo_move(undo_data);
-            max_eval = std::max(max_eval, eval);
-            alpha = std::max(alpha, eval);
-            
-            if (beta <= alpha) {
-                stats.beta_cutoffs++;
-                // Store killer move if it's not a capture
-                if (ply < MAX_DEPTH && !move.is_capture()) {
-                    std::lock_guard<std::mutex> lock(killer_history_mutex);
-                    // Shift killer moves and add new one
-                    killer_moves[ply][1] = killer_moves[ply][0];
-                    killer_moves[ply][0] = move;
-                }
-                // Update history heuristic
-                int from_square = move.from_rank * 8 + move.from_file;
-                int to_square = move.to_rank * 8 + move.to_file;
-                if (from_square < 64 && to_square < 64) {
-                    std::lock_guard<std::mutex> lock(killer_history_mutex);
-                    history_table[from_square][to_square] += depth * depth;
-                }
-                break; // Beta cutoff
-            }
-        }
-        
-        return max_eval;
-    } else {
-        int min_eval = INFINITY_SCORE;
-        
-        for (const Move& move : moves) {
-            if (should_stop()) break;
-            
-            // Make move and get undo data
-            BitboardMoveUndoData undo_data = board.apply_move(move);
-            
-            int eval = minimax(board, depth - 1, alpha, beta, true, stats, ply + 1);
-            
-            // Undo move
-            board.undo_move(undo_data);
-            min_eval = std::min(min_eval, eval);
-            beta = std::min(beta, eval);
-            
-            if (beta <= alpha) {
-                stats.beta_cutoffs++;
-                // Store killer move if it's not a capture
-                if (ply < MAX_DEPTH && !move.is_capture()) {
-                    std::lock_guard<std::mutex> lock(killer_history_mutex);
-                    // Shift killer moves and add new one
-                    killer_moves[ply][1] = killer_moves[ply][0];
-                    killer_moves[ply][0] = move;
-                }
-                // Update history heuristic
-                int from_square = move.from_rank * 8 + move.from_file;
-                int to_square = move.to_rank * 8 + move.to_file;
-                if (from_square < 64 && to_square < 64) {
-                    std::lock_guard<std::mutex> lock(killer_history_mutex);
-                    history_table[from_square][to_square] += depth * depth;
-                }
-                break; // Alpha cutoff
-            }
-        }
-        
-        return min_eval;
-    }
-}
+// Old minimax function removed - using minimax_with_context instead
 
-int Search::quiescence_search(Board& board, int alpha, int beta, bool maximizing_player, SearchStats& stats, int qs_depth) {
-    stats.quiescence_nodes++;
-    
-    // Check stop condition
-    if (should_stop()) {
-        return 0;
-    }
-    
-    // Limit quiescence search depth to prevent explosion
-    if (qs_depth >= MAX_QUIESCENCE_DEPTH) {
-        return evaluator->evaluate(board);
-    }
-    
-    // Stand pat evaluation
-    int stand_pat = evaluator->evaluate(board);
-    
-    if (maximizing_player) {
-        if (stand_pat >= beta) {
-            return beta;
-        }
-        alpha = std::max(alpha, stand_pat);
-    } else {
-        if (stand_pat <= alpha) {
-            return alpha;
-        }
-        beta = std::min(beta, stand_pat);
-    }
-    
-    MoveGenerator move_gen;
-    MoveList moves = move_gen.generate_legal_moves(board);
-    
-    // Filter for captures and promotions only
-    MoveList tactical_moves;
-    for (const Move& move : moves) {
-        if (move.captured_piece != '.' || move.promotion_piece != '.') {
-            // For promotions, only consider queen promotions in quiescence
-            if (move.promotion_piece != '.' && 
-                Board::char_to_piece_type(move.promotion_piece) != Board::QUEEN) {
-                continue;
-            }
-            tactical_moves.push_back(move);
-        }
-    }
-    
-    // Order captures by MVV-LVA
-    order_moves(tactical_moves, board);
-    
-    if (maximizing_player) {
-        int max_eval = stand_pat;
-        
-        for (const Move& move : tactical_moves) {
-            if (should_stop()) break;
-            
-            // Make move and get undo data
-            BitboardMoveUndoData undo_data = board.apply_move(move);
-            
-            int eval = quiescence_search(board, alpha, beta, false, stats, qs_depth + 1);
-            
-            // Undo move
-            board.undo_move(undo_data);
-            max_eval = std::max(max_eval, eval);
-            alpha = std::max(alpha, eval);
-            
-            if (beta <= alpha) {
-                break; // Beta cutoff
-            }
-        }
-        
-        return max_eval;
-    } else {
-        int min_eval = stand_pat;
-        
-        for (const Move& move : tactical_moves) {
-            if (should_stop()) break;
-            
-            // Make move and get undo data
-            BitboardMoveUndoData undo_data = board.apply_move(move);
-            
-            int eval = quiescence_search(board, alpha, beta, true, stats, qs_depth + 1);
-            
-            // Undo move
-            board.undo_move(undo_data);
-            min_eval = std::min(min_eval, eval);
-            beta = std::min(beta, eval);
-            
-            if (beta <= alpha) {
-                break; // Alpha cutoff
-            }
-        }
-        
-        return min_eval;
-    }
-}
+// Old quiescence_search function removed - using quiescence_search_with_context instead
 
 SearchResult Search::search_worker(Board& board, const MoveList& moves, int start_idx, int end_idx, int depth) {
     SearchResult result;
     result.score = -INFINITY_SCORE;
+    
+    // Create SearchContext for this worker
+    SearchContext context(board);
     
     for (int i = start_idx; i < end_idx && i < moves.size(); ++i) {
         if (should_stop()) break;
@@ -440,12 +246,12 @@ SearchResult Search::search_worker(Board& board, const MoveList& moves, int star
         const Move& move = moves[i];
         
         // Make move and get undo data
-        BitboardMoveUndoData undo_data = board.apply_move(move);
+        BitboardMoveUndoData undo_data = context.board.apply_move(move);
         
-        int score = minimax(board, depth - 1, -INFINITY_SCORE, INFINITY_SCORE, false, result.stats, 0);
+        int score = minimax_with_context(context, depth - 1, -INFINITY_SCORE, INFINITY_SCORE, false, 0);
         
         // Undo move
-        board.undo_move(undo_data);
+        context.board.undo_move(undo_data);
         
         if (score > result.score) {
             result.best_move = move;
@@ -477,29 +283,459 @@ bool Search::should_stop() const {
     return stop_flag.load();
 }
 
-void Search::order_moves(MoveList& moves, Board& board, int ply) {
-    // Enhanced move ordering: captures, killer moves, history heuristic
-    std::sort(moves.begin(), moves.end(), [this, &board, ply](const Move& a, const Move& b) {
-        return evaluate_move_priority(a, board, ply) > evaluate_move_priority(b, board, ply);
-    });
+// Old order_moves and evaluate_move_priority functions removed - using context-based versions instead
+
+// Parallel root search implementation
+
+SearchResult Search::parallel_root_search(Board& board, const MoveList& moves, int depth) {
+    SearchResult best_result;
+    best_result.score = -INFINITY_SCORE;
+    
+    // Calculate moves per thread
+    int num_threads = std::min(thread_count, static_cast<int>(moves.size()));
+    int moves_per_thread = moves.size() / num_threads;
+    int remaining_moves = moves.size() % num_threads;
+    
+    // Clear previous futures
+    search_futures.clear();
+    search_futures.reserve(num_threads);
+    
+    // Launch worker threads
+    int start_idx = 0;
+    for (int i = 0; i < num_threads; ++i) {
+        int end_idx = start_idx + moves_per_thread;
+        if (i < remaining_moves) {
+            end_idx++; // Distribute remaining moves to first threads
+        }
+        
+        // Launch async task with board copy (SearchContext created inside worker)
+        search_futures.emplace_back(
+            std::async(std::launch::async, 
+                      [this, board, &moves, start_idx, end_idx, depth]() {
+                          SearchContext context(board);
+                          return parallel_root_worker(context, moves, start_idx, end_idx, depth);
+                      })
+        );
+        
+        start_idx = end_idx;
+    }
+    
+    // Collect results from all threads
+    SearchStats combined_stats;
+    for (auto& future : search_futures) {
+        if (should_stop()) break;
+        
+        try {
+            SearchResult thread_result = future.get();
+            
+            // Update best move if this thread found a better one
+            if (thread_result.best_move.is_valid() && thread_result.score > best_result.score) {
+                best_result.best_move = thread_result.best_move;
+                best_result.score = thread_result.score;
+            }
+            
+            // Accumulate statistics
+            combined_stats.nodes_searched += thread_result.stats.nodes_searched;
+            combined_stats.quiescence_nodes += thread_result.stats.quiescence_nodes;
+            combined_stats.tt_hits += thread_result.stats.tt_hits;
+            combined_stats.beta_cutoffs += thread_result.stats.beta_cutoffs;
+            combined_stats.null_move_cutoffs += thread_result.stats.null_move_cutoffs;
+            combined_stats.lmr_reductions += thread_result.stats.lmr_reductions;
+            
+        } catch (const std::exception& e) {
+            // Handle thread exceptions gracefully
+            continue;
+        }
+    }
+    
+    best_result.stats = combined_stats;
+    best_result.depth = depth;
+    
+    return best_result;
 }
 
-int Search::evaluate_move_priority(const Move& move, Board& board, int ply) {
+// Thread pool management methods
+
+void Search::init_thread_pool() {
+    if (thread_pool_active.load()) {
+        return; // Already initialized
+    }
+    
+    thread_pool_active.store(true);
+    // Thread pool is created on-demand during search
+}
+
+void Search::shutdown_thread_pool() {
+    thread_pool_active.store(false);
+    
+    // Wait for any pending futures to complete
+    for (auto& future : search_futures) {
+        if (future.valid()) {
+            future.wait();
+        }
+    }
+    search_futures.clear();
+}
+
+SearchResult Search::parallel_root_worker(SearchContext& context, const MoveList& moves, int start_idx, int end_idx, int depth) {
+    SearchResult result;
+    result.score = -INFINITY_SCORE;
+    
+    for (int i = start_idx; i < end_idx && i < moves.size(); ++i) {
+        if (should_stop()) break;
+        
+        const Move& move = moves[i];
+        
+        // Make move on the thread's private board copy
+        BitboardMoveUndoData undo_data = context.board.apply_move(move);
+        
+        // Use thread-local minimax with per-thread data
+        int score = minimax_with_context(context, depth - 1, -INFINITY_SCORE, INFINITY_SCORE, false, 0);
+        
+        // Undo move
+        context.board.undo_move(undo_data);
+        
+        if (score > result.score) {
+            result.best_move = move;
+            result.score = score;
+        }
+        
+        // Update per-thread statistics (already updated in minimax_with_context)
+    }
+    
+    // Merge per-thread stats into result
+    result.stats = context.stats;
+    return result;
+}
+
+// Helper minimax function that uses SearchContext instead of global data
+int Search::minimax_with_context(SearchContext& context, int depth, int alpha, int beta, bool maximizing_player, int ply) {
+    if (should_stop() || depth <= 0) {
+        if (depth <= 0) {
+            return quiescence_search_with_context(context, alpha, beta, maximizing_player, 0);
+        }
+        return evaluator->evaluate(context.board);
+    }
+    
+    context.stats.nodes_searched++;
+    
+    // Check for mate distance pruning
+    if (ply > 0) {
+        alpha = std::max(alpha, -MATE_SCORE + ply);
+        beta = std::min(beta, MATE_SCORE - ply - 1);
+        if (alpha >= beta) {
+            return alpha;
+        }
+    }
+    
+    // Transposition table probe (shared TT)
+    uint64_t zobrist_key = context.board.get_zobrist_hash();
+    TTEntry tt_entry;
+    Move tt_move;
+    
+    const TTEntry* tt_result = transposition_table.probe(zobrist_key, depth, alpha, beta, ply);
+    if (tt_result != nullptr) {
+        tt_entry = *tt_result;
+        if (tt_entry.depth >= depth) {
+            int tt_score = tt_entry.score;
+            
+            // Adjust mate scores
+            if (tt_score > MATE_SCORE - 1000) {
+                tt_score -= ply;
+            } else if (tt_score < -MATE_SCORE + 1000) {
+                tt_score += ply;
+            }
+            
+            switch (tt_entry.get_type()) {
+                case TTEntryType::EXACT:
+                    return tt_score;
+                case TTEntryType::LOWER_BOUND:
+                    alpha = std::max(alpha, tt_score);
+                    break;
+                case TTEntryType::UPPER_BOUND:
+                    beta = std::min(beta, tt_score);
+                    break;
+            }
+            
+            if (alpha >= beta) {
+                return tt_score;
+            }
+        }
+        
+        // Extract TT move for move ordering
+        tt_move.from_uint32(tt_entry.move);
+    }
+    
+    // Generate moves
+    MoveGenerator move_gen;
+    MoveList legal_moves = move_gen.generate_legal_moves(context.board);
+    
+    if (legal_moves.empty()) {
+        // No legal moves - checkmate or stalemate
+        if (move_gen.is_in_check(context.board, context.board.get_active_color())) {
+            return -MATE_SCORE + ply; // Checkmate
+        } else {
+            return DRAW_SCORE; // Stalemate
+        }
+    }
+    
+    // Order moves using per-thread data
+    order_moves_with_context(legal_moves, context, ply, tt_move);
+    
+    Move best_move;
+    int best_score;
+    TTEntryType entry_type;
+    
+    if (maximizing_player) {
+        best_score = -INFINITY_SCORE;
+        
+        for (const Move& move : legal_moves) {
+            if (should_stop()) break;
+            
+            BitboardMoveUndoData undo_data = context.board.apply_move(move);
+            
+            int eval = minimax_with_context(context, depth - 1, alpha, beta, false, ply + 1);
+            
+            context.board.undo_move(undo_data);
+            
+            if (eval > best_score) {
+                best_score = eval;
+                best_move = move;
+            }
+            
+            alpha = std::max(alpha, eval);
+            
+            if (beta <= alpha) {
+                // Beta cutoff - update per-thread killer moves and history
+                if (!move.is_capture() && ply < MAX_DEPTH) {
+                    // Update killer moves
+                    if (context.killer_moves[1][ply] != move) {
+                        context.killer_moves[0][ply] = context.killer_moves[1][ply];
+                        context.killer_moves[1][ply] = move;
+                    }
+                    
+                    // Update history heuristic
+                    int from_square = move.from_rank * 8 + move.from_file;
+                    int to_square = move.to_rank * 8 + move.to_file;
+                    if (from_square < 64 && to_square < 64) {
+                        context.history_table[context.board.get_active_color()][from_square][to_square] += depth * depth;
+                    }
+                }
+                break;
+            }
+        }
+        
+        entry_type = (best_score <= alpha) ? TTEntryType::UPPER_BOUND : 
+                    (best_score >= beta) ? TTEntryType::LOWER_BOUND : TTEntryType::EXACT;
+    } else {
+        best_score = INFINITY_SCORE;
+        
+        for (const Move& move : legal_moves) {
+            if (should_stop()) break;
+            
+            BitboardMoveUndoData undo_data = context.board.apply_move(move);
+            
+            int eval = minimax_with_context(context, depth - 1, alpha, beta, true, ply + 1);
+            
+            context.board.undo_move(undo_data);
+            
+            if (eval < best_score) {
+                best_score = eval;
+                best_move = move;
+            }
+            
+            beta = std::min(beta, eval);
+            
+            if (beta <= alpha) {
+                // Alpha cutoff - update per-thread killer moves and history
+                if (!move.is_capture() && ply < MAX_DEPTH) {
+                    // Update killer moves
+                    if (context.killer_moves[1][ply] != move) {
+                        context.killer_moves[0][ply] = context.killer_moves[1][ply];
+                        context.killer_moves[1][ply] = move;
+                    }
+                    
+                    // Update history heuristic
+                    int from_square = move.from_rank * 8 + move.from_file;
+                    int to_square = move.to_rank * 8 + move.to_file;
+                    if (from_square < 64 && to_square < 64) {
+                        context.history_table[context.board.get_active_color()][from_square][to_square] += depth * depth;
+                    }
+                }
+                break;
+            }
+        }
+        
+        entry_type = (best_score >= beta) ? TTEntryType::LOWER_BOUND : 
+                    (best_score <= alpha) ? TTEntryType::UPPER_BOUND : TTEntryType::EXACT;
+    }
+    
+    // Adjust mate scores for storage
+    int store_score = best_score;
+    if (store_score > MATE_SCORE - 1000) {
+        store_score += ply;
+    } else if (store_score < -MATE_SCORE + 1000) {
+        store_score -= ply;
+    }
+    
+    // Store in transposition table
+    transposition_table.store(zobrist_key, depth, store_score, entry_type, best_move.to_uint32(), ply);
+    
+    return best_score;
+}
+
+// Helper quiescence search with context
+int Search::quiescence_search_with_context(SearchContext& context, int alpha, int beta, bool maximizing_player, int qs_depth) {
+    if (should_stop() || qs_depth >= MAX_QUIESCENCE_DEPTH) {
+        return evaluator->evaluate(context.board);
+    }
+    
+    context.stats.quiescence_nodes++;
+    
+    context.stats.nodes_searched++;
+    
+    int stand_pat = evaluator->evaluate(context.board);
+    
+    if (maximizing_player) {
+        if (stand_pat >= beta) {
+            return beta;
+        }
+        alpha = std::max(alpha, stand_pat);
+    } else {
+        if (stand_pat <= alpha) {
+            return alpha;
+        }
+        beta = std::min(beta, stand_pat);
+    }
+    
+    // Generate tactical moves (captures, promotions) efficiently
+    MoveGenerator move_gen;
+    MoveList tactical_moves = move_gen.generate_tactical_moves(context.board);
+    
+    if (tactical_moves.empty()) {
+        return stand_pat;
+    }
+    
+    // Order tactical moves
+    order_moves_with_context(tactical_moves, context, qs_depth);
+    
+    if (maximizing_player) {
+        int max_eval = stand_pat;
+        
+        for (const Move& move : tactical_moves) {
+            if (should_stop()) break;
+            
+            BitboardMoveUndoData undo_data = context.board.apply_move(move);
+            int eval = quiescence_search_with_context(context, alpha, beta, false, qs_depth + 1);
+            context.board.undo_move(undo_data);
+            
+            max_eval = std::max(max_eval, eval);
+            alpha = std::max(alpha, eval);
+            
+            if (beta <= alpha) {
+                break;
+            }
+        }
+        
+        return max_eval;
+    }
+    int min_eval = stand_pat;
+        
+    for (const Move& move : tactical_moves) {
+        if (should_stop()) break;
+            
+        BitboardMoveUndoData undo_data = context.board.apply_move(move);
+        int eval = quiescence_search_with_context(context, alpha, beta, true, qs_depth + 1);
+        context.board.undo_move(undo_data);
+            
+        min_eval = std::min(min_eval, eval);
+        beta = std::min(beta, eval);
+            
+        if (beta <= alpha) {
+            break;
+        }
+    }
+        
+    return min_eval;
+}
+
+// Helper struct for move scoring
+struct ScoredMove {
+    Move move;
+    int score;
+};
+
+// Helper move ordering with context
+void Search::order_moves_with_context(MoveList& moves, SearchContext& context, int ply, const Move& tt_move) {
+    if (moves.empty()) return;
+    
+    // For small move lists, use insertion sort for better performance
+    if (moves.size() < 20) {
+        // Score each move once and use insertion sort
+        std::vector<ScoredMove> scored_moves;
+        scored_moves.reserve(moves.size());
+        
+        for (const Move& move : moves) {
+            scored_moves.push_back({move, evaluate_move_priority_with_context(move, context, ply, tt_move)});
+        }
+        
+        // Insertion sort by score (descending)
+        for (size_t i = 1; i < scored_moves.size(); ++i) {
+            ScoredMove key = scored_moves[i];
+            int j = static_cast<int>(i) - 1;
+            
+            while (j >= 0 && scored_moves[j].score < key.score) {
+                scored_moves[j + 1] = scored_moves[j];
+                j--;
+            }
+            scored_moves[j + 1] = key;
+        }
+        
+        // Rewrite original moves from sorted scored moves
+        for (size_t i = 0; i < moves.size(); ++i) {
+            moves[i] = scored_moves[i].move;
+        }
+    } else {
+        // For larger move lists, score once and use std::sort
+        std::vector<ScoredMove> scored_moves;
+        scored_moves.reserve(moves.size());
+        
+        for (const Move& move : moves) {
+            scored_moves.push_back({move, evaluate_move_priority_with_context(move, context, ply, tt_move)});
+        }
+        
+        // Sort by score (descending)
+        std::sort(scored_moves.begin(), scored_moves.end(), [](const ScoredMove& a, const ScoredMove& b) {
+            return a.score > b.score;
+        });
+        
+        // Rewrite original moves from sorted scored moves
+        for (size_t i = 0; i < moves.size(); ++i) {
+            moves[i] = scored_moves[i].move;
+        }
+    }
+}
+
+int Search::evaluate_move_priority_with_context(const Move& move, const SearchContext& context, int ply, const Move& tt_move) {
     int priority = 0;
+    
+    // Highest priority: TT move
+    if (tt_move.is_valid() && move == tt_move) {
+        priority += 10000;
+    }
     
     // Prioritize captures
     if (move.is_capture()) {
         priority += 1000;
         
-        // MVV-LVA (Most Valuable Victim - Least Valuable Attacker)
+        // MVV-LVA
         char victim = move.captured_piece;
         char attacker = move.piece;
         
-        // Simple piece values for ordering
         auto get_piece_value = [](char piece) {
             switch (std::tolower(piece)) {
                 case 'p': return 100;
-                case 'n': return 300;
+                case 'n': return 295;
                 case 'b': return 300;
                 case 'r': return 500;
                 case 'q': return 900;
@@ -521,32 +757,23 @@ int Search::evaluate_move_priority(const Move& move, Board& board, int ply) {
         priority += 50;
     }
     
-    // Check killer moves (only for non-captures)
+    // Check per-thread killer moves
     if (!move.is_capture() && ply < MAX_DEPTH) {
-        std::lock_guard<std::mutex> lock(killer_history_mutex);
-        if (move == killer_moves[ply][0]) {
-            priority += 500;  // First killer move
-        } else if (move == killer_moves[ply][1]) {
-            priority += 400;  // Second killer move
+        if (move == context.killer_moves[0][ply]) {
+            priority += 500;
+        } else if (move == context.killer_moves[1][ply]) {
+            priority += 400;
         }
     }
     
-    // History heuristic (for non-captures)
+    // Per-thread history heuristic
     if (!move.is_capture()) {
         int from_square = move.from_rank * 8 + move.from_file;
         int to_square = move.to_rank * 8 + move.to_file;
         if (from_square < 64 && to_square < 64) {
-            std::lock_guard<std::mutex> lock(killer_history_mutex);
-            priority += history_table[from_square][to_square] / 100;  // Scale down history score
+            priority += context.history_table[context.board.get_active_color()][from_square][to_square] / 100;
         }
     }
-    
-    // Add some randomness to avoid deterministic behavior
-    // Temporarily disabled for debugging
-    // static std::random_device rd;
-    // static std::mt19937 gen(rd());
-    // static std::uniform_int_distribution<> dis(0, 10);
-    // priority += dis(gen);
     
     return priority;
 }

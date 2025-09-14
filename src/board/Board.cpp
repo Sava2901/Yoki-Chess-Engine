@@ -3,6 +3,7 @@
 #include <sstream>
 #include <cctype>
 #include <algorithm>
+#include <cstring>
 #include "MoveGenerator.h"
 
 // Castling lookup tables
@@ -16,6 +17,13 @@ static bool char_lookup_initialized = false;
 // Castling rights masks for square-based updates
 static uint8_t CASTLING_RIGHTS_MASK[64];
 static bool castling_mask_initialized = false;
+
+// Zobrist hash tables - static member definitions
+uint64_t Board::zobrist_pieces[2][6][64];
+uint64_t Board::zobrist_castling[16];
+uint64_t Board::zobrist_en_passant[8];
+uint64_t Board::zobrist_side_to_move;
+bool Board::zobrist_initialized = false;
 
 /**
  * @brief Initializes the character-to-piece-type lookup table for FEN parsing
@@ -117,6 +125,7 @@ Board::Board() {
     en_passant_file = -1;
     halfmove_clock = 0;
     fullmove_number = 1;
+    zobrist_hash = 0;
     
     // Initialize piece mailbox
     for (int i = 0; i < 64; i++) {
@@ -131,6 +140,56 @@ Board::Board() {
     
     // Initialize character lookup
     init_char_lookup();
+    
+    // Initialize Zobrist hash tables
+    init_zobrist_tables();
+}
+
+Board::Board(const Board& other) {
+    // Proper C++ copy for std::array members
+    piece_bitboards = other.piece_bitboards;
+    color_bitboards = other.color_bitboards;
+    king_positions = other.king_positions;
+    memcpy(piece_mailbox, other.piece_mailbox, sizeof(piece_mailbox));
+    
+    // Copy scalar members
+    all_pieces = other.all_pieces;
+    active_color = other.active_color;
+    castling_rights = other.castling_rights;
+    en_passant_file = other.en_passant_file;
+    halfmove_clock = other.halfmove_clock;
+    fullmove_number = other.fullmove_number;
+    zobrist_hash = other.zobrist_hash;
+    
+    // Initialize static tables if needed (should already be done)
+    BitboardUtils::init();
+    init_castling_mask();
+    init_char_lookup();
+    init_zobrist_tables();
+}
+
+Board& Board::operator=(const Board& other) {
+    if (this != &other) {
+        // Proper C++ copy for std::array members
+        piece_bitboards = other.piece_bitboards;
+        color_bitboards = other.color_bitboards;
+        king_positions = other.king_positions;
+        memcpy(piece_mailbox, other.piece_mailbox, sizeof(piece_mailbox));
+        
+        // Copy scalar members
+        all_pieces = other.all_pieces;
+        active_color = other.active_color;
+        castling_rights = other.castling_rights;
+        en_passant_file = other.en_passant_file;
+        halfmove_clock = other.halfmove_clock;
+        fullmove_number = other.fullmove_number;
+        zobrist_hash = other.zobrist_hash;
+    }
+    return *this;
+}
+
+Board Board::clone() const {
+    return Board(*this);
 }
 
 void Board::set_starting_position() {
@@ -200,6 +259,9 @@ void Board::set_from_fen(const std::string& fen) {
     fullmove_number = fullmove_part;
     
     update_combined_bitboards();
+    
+    // Calculate initial Zobrist hash
+    zobrist_hash = calculate_zobrist_hash();
 }
 
 std::string Board::to_fen() const {
@@ -380,6 +442,7 @@ BitboardMoveUndoData Board::apply_move(const Move& move) {
     undo_data.castling_rights = castling_rights;
     undo_data.en_passant_file = en_passant_file;
     undo_data.halfmove_clock = halfmove_clock;
+    undo_data.zobrist_hash = zobrist_hash;  // Store current hash for undo
     
     int from_square = BitboardUtils::square_index(move.from_rank, move.from_file);
     int to_square = BitboardUtils::square_index(move.to_rank, move.to_file);
@@ -457,6 +520,9 @@ BitboardMoveUndoData Board::apply_move(const Move& move) {
     // Update fullmove number (branchless)
     fullmove_number += (active_color == BLACK);
     
+    // Update Zobrist hash incrementally
+    update_zobrist_hash(move, undo_data.castling_rights, undo_data.en_passant_file);
+    
     // Switch active color
     active_color = opponent_color;
     
@@ -471,6 +537,7 @@ void Board::undo_move(const BitboardMoveUndoData& undo_data) {
     castling_rights = undo_data.castling_rights;
     en_passant_file = undo_data.en_passant_file;
     halfmove_clock = undo_data.halfmove_clock;
+    zobrist_hash = undo_data.zobrist_hash;
     
     // Switch back active color
     active_color = (active_color == WHITE) ? BLACK : WHITE;
@@ -634,4 +701,126 @@ Bitboard Board::get_attackers_to_square(int square, Color attacking_color) const
     attackers |= king_attacks & piece_bitboards[attacking_color][KING];
     
     return attackers;
+}
+
+// Zobrist hashing implementation
+void Board::init_zobrist_tables() {
+    if (zobrist_initialized) return;
+    
+    std::random_device rd;
+    std::mt19937_64 gen(rd());
+    std::uniform_int_distribution<uint64_t> dis;
+    
+    // Initialize piece-square hash values
+    for (int color = 0; color < NUM_COLORS; color++) {
+        for (int piece = 0; piece < NUM_PIECE_TYPES; piece++) {
+            for (int square = 0; square < 64; square++) {
+                zobrist_pieces[color][piece][square] = dis(gen);
+            }
+        }
+    }
+    
+    // Initialize castling rights hash values
+    for (int i = 0; i < 16; i++) {
+        zobrist_castling[i] = dis(gen);
+    }
+    
+    // Initialize en passant file hash values
+    for (int file = 0; file < 8; file++) {
+        zobrist_en_passant[file] = dis(gen);
+    }
+    
+    // Initialize side to move hash value
+    zobrist_side_to_move = dis(gen);
+    
+    zobrist_initialized = true;
+}
+
+uint64_t Board::calculate_zobrist_hash() const {
+    uint64_t hash = 0;
+    
+    // Hash all pieces on the board
+    for (int color = 0; color < NUM_COLORS; color++) {
+        for (int piece = 0; piece < NUM_PIECE_TYPES; piece++) {
+            Bitboard bb = piece_bitboards[color][piece];
+            while (bb) {
+                int square = BitboardUtils::get_lsb_index(bb);
+                hash ^= zobrist_pieces[color][piece][square];
+                bb &= bb - 1;  // Remove the least significant bit
+            }
+        }
+    }
+    
+    // Hash castling rights
+    hash ^= zobrist_castling[castling_rights];
+    
+    // Hash en passant file
+    if (en_passant_file != -1) {
+        hash ^= zobrist_en_passant[en_passant_file];
+    }
+    
+    // Hash side to move
+    if (active_color == BLACK) {
+        hash ^= zobrist_side_to_move;
+    }
+    
+    return hash;
+}
+
+void Board::update_zobrist_hash(const Move& move, uint8_t old_castling_rights, int old_en_passant_file) {
+    int from_square = BitboardUtils::square_index(move.from_rank, move.from_file);
+    int to_square = BitboardUtils::square_index(move.to_rank, move.to_file);
+    
+    PieceType moving_piece_type = char_to_piece_type(move.piece);
+    Color moving_color = char_to_color(move.piece);
+    Color opponent_color = (moving_color == WHITE) ? BLACK : WHITE;
+    
+    // Remove piece from source square
+    zobrist_hash ^= zobrist_pieces[moving_color][moving_piece_type][from_square];
+    
+    // Add piece to destination square (or promoted piece)
+    if (move.promotion_piece != '.') {
+        PieceType promotion_type = char_to_piece_type(move.promotion_piece);
+        zobrist_hash ^= zobrist_pieces[moving_color][promotion_type][to_square];
+    } else {
+        zobrist_hash ^= zobrist_pieces[moving_color][moving_piece_type][to_square];
+    }
+    
+    // Handle captured piece
+    if (move.is_en_passant) {
+        // Remove en passant captured pawn
+        int captured_pawn_rank = (moving_color == WHITE) ? move.to_rank - 1 : move.to_rank + 1;
+        int captured_pawn_square = BitboardUtils::square_index(captured_pawn_rank, move.to_file);
+        zobrist_hash ^= zobrist_pieces[opponent_color][PAWN][captured_pawn_square];
+    } else if (move.captured_piece != '.') {
+        PieceType captured_type = char_to_piece_type(move.captured_piece);
+        Color captured_color = char_to_color(move.captured_piece);
+        zobrist_hash ^= zobrist_pieces[captured_color][captured_type][to_square];
+    }
+    
+    // Handle castling rook movement
+    if (move.is_castling) {
+        int castling_side = (move.to_file == 6) ? 0 : 1; // 0=kingside, 1=queenside
+        int rook_from_square = BitboardUtils::square_index(move.from_rank, CASTLING_ROOK_FROM[castling_side]);
+        int rook_to_square = BitboardUtils::square_index(move.from_rank, CASTLING_ROOK_TO[castling_side]);
+        
+        // Remove rook from original square and add to new square
+        zobrist_hash ^= zobrist_pieces[moving_color][ROOK][rook_from_square];
+        zobrist_hash ^= zobrist_pieces[moving_color][ROOK][rook_to_square];
+    }
+    
+    // Update castling rights
+    zobrist_hash ^= zobrist_castling[old_castling_rights];
+    zobrist_hash ^= zobrist_castling[castling_rights];
+    
+    // Update en passant file
+    if (old_en_passant_file != -1) {
+        zobrist_hash ^= zobrist_en_passant[old_en_passant_file];
+    }
+    if (en_passant_file != -1) {
+        zobrist_hash ^= zobrist_en_passant[en_passant_file];
+    }
+    
+    // Update side to move (always flip)
+    zobrist_hash ^= zobrist_side_to_move;
 }

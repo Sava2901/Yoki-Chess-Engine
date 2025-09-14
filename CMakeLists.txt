@@ -23,20 +23,20 @@ add_library(engine
     src/engine/Search.h
     src/engine/Evaluation.cpp
     src/engine/Evaluation.h
-        src/board/Move.cpp
-    src/board/Move.h
 )
 
 # Create bitboard library
 add_library(bitboard
     src/board/Bitboard.cpp
     src/board/Bitboard.h
-        src/board/Board.cpp
-        src/board/Board.h
-        src/board/MoveGenerator.cpp
-        src/board/MoveGenerator.h
+    src/board/Board.cpp
+    src/board/Board.h
+    src/board/MoveGenerator.cpp
+    src/board/MoveGenerator.h
     src/board/Move.cpp
     src/board/Move.h
+    src/board/TranspositionTable.h
+    src/board/TranspositionTable.cpp
 )
 
 # Create bitboard test executable
@@ -93,4 +93,4 @@ target_link_libraries(test_optimizations bitboard)
 target_link_libraries(test_evaluation engine bitboard)
 
 # Link libraries to search test executable
-target_link_libraries(test_search engine bitboard)
+target_link_libraries(test_search engine bitboard atomic)
