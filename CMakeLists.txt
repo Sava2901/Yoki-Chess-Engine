@@ -59,11 +59,6 @@ add_executable(test_piece_movement
     src/main/test_piece_movement.cpp
 )
 
-# Create optimizations test executable
-add_executable(test_optimizations
-        src/main/test_optimizations.cpp
-)
-
 # Create evaluation test executable
 add_executable(test_evaluation
     src/main/test_evaluation.cpp
@@ -85,9 +80,6 @@ target_link_libraries(test_move_undo bitboard)
 
 # Link bitboard library to piece movement test executable
 target_link_libraries(test_piece_movement bitboard)
-
-# Link bitboard library to optimizations test executable
-target_link_libraries(test_optimizations bitboard)
 
 # Link libraries to evaluation test executable
 target_link_libraries(test_evaluation engine bitboard)

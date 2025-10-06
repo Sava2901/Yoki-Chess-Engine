@@ -361,7 +361,7 @@ public:
         Board original = board;
 
         MoveGenerator generator;
-        std::vector<Move> legal_moves = generator.generate_legal_moves(board);
+        MoveList legal_moves = generator.generate_legal_moves(board);
         for (auto move : legal_moves) {
             std::cout << move.to_algebraic() << std::endl;
         }
@@ -388,12 +388,11 @@ public:
         Board original = board;
         
         // Test multiple moves and undos in sequence
-        std::vector<Move> moves = {
-            Move(1, 4, 3, 4, 'P'), // e2-e4
-            Move(6, 4, 4, 4, 'p'), // e7-e5
-            Move(0, 6, 2, 5, 'N'), // Ng1-f3
-            Move(7, 1, 5, 2, 'n')  // Nb8-c6
-        };
+        MoveList moves;
+        moves.push_back(Move(1, 4, 3, 4, 'P')); // e2-e4
+        moves.push_back(Move(6, 4, 4, 4, 'p')); // e7-e5
+        moves.push_back(Move(0, 6, 2, 5, 'N')); // Ng1-f3
+        moves.push_back(Move(7, 1, 5, 2, 'n')); // Nb8-c6
         
         std::vector<BitboardMoveUndoData> undo_data_list;
         

@@ -1122,7 +1122,7 @@ void test_incremental_evaluation_detailed() {
     
     for (const auto& move_str : test_moves) {
         // Generate legal moves to find the move
-        std::vector<Move> legal_moves = move_gen.generate_legal_moves(board);
+        MoveList legal_moves = move_gen.generate_legal_moves(board);
         
         Move test_move;
         bool move_found = false;
@@ -1310,7 +1310,7 @@ void test_move_evaluations() {
         std::cout << "Base position evaluation: " << base_eval << " cp" << std::endl;
 
         // Generate all legal moves
-        std::vector<Move> legal_moves = move_gen.generate_legal_moves(board);
+        MoveList legal_moves = move_gen.generate_legal_moves(board);
         std::cout << "Legal moves found: " << legal_moves.size() << std::endl;
         
         if (legal_moves.empty()) {
@@ -1442,7 +1442,7 @@ void test_custom_fen_move_evaluations() {
             std::cout << "Position evaluation: " << base_eval << " cp" << std::endl;
             
             // Generate and evaluate moves
-            std::vector<Move> legal_moves = move_gen.generate_legal_moves(board);
+            MoveList legal_moves = move_gen.generate_legal_moves(board);
             std::cout << "Legal moves: " << legal_moves.size() << std::endl;
             
             if (!legal_moves.empty()) {

@@ -69,7 +69,7 @@ void test_move_generation() {
     board.set_starting_position();
     
     auto start = std::chrono::high_resolution_clock::now();
-    std::vector<Move> moves = generator.generate_all_moves(board);
+    MoveList moves = generator.generate_all_moves(board);
     auto end = std::chrono::high_resolution_clock::now();
     
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
@@ -106,7 +106,7 @@ void test_legal_moves() {
     board.set_starting_position();
     
     auto start = std::chrono::high_resolution_clock::now();
-    std::vector<Move> legal_moves = generator.generate_legal_moves(board);
+    MoveList legal_moves = generator.generate_legal_moves(board);
     auto end = std::chrono::high_resolution_clock::now();
     
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
@@ -137,7 +137,7 @@ void performance_test() {
     
     long long total_moves = 0;
     for (int i = 0; i < iterations; i++) {
-        std::vector<Move> moves = generator.generate_all_moves(board);
+        MoveList moves = generator.generate_all_moves(board);
         total_moves += moves.size();
     }
     

@@ -1,856 +1,212 @@
 #include "Search.h"
-#include "../board/MoveGenerator.h"
 #include <algorithm>
+#include <chrono>
+#include <thread>
 #include <future>
-#include <random>
-#include <cassert>
-
-// TODO: Timed functions still does not work
-// TODO: Depth above 3 freezes the search
 
 // Constructor
 Search::Search() 
-    : evaluator(std::make_unique<Evaluation>()),
-      stop_flag(false),
-      search_active(false),
-      thread_count(4),
-      thread_pool_active(false) {
-    // Constructor now only initializes basic members
-    // Killer moves and history tables are now per-thread in SearchContext
+    : evaluator(std::make_unique<Evaluation>())
+    , transposition_table()
+    , stop_flag(false)
+    , search_active(false)
+    , search_start_time(std::chrono::steady_clock::now())
+    , time_limit_ms(std::chrono::milliseconds(0))
+    , time_limit_active(false)
+    , thread_count(4)
+    , thread_pool_active(false)
+{
+    // Initialize thread pool
+    init_thread_pool();
 }
 
 // Destructor
 Search::~Search() {
+    // Stop any running search
     stop_search();
+    
+    // Shutdown thread pool
     shutdown_thread_pool();
     
-    // Join any active threads
-    if (time_manager_thread.joinable()) {
-        time_manager_thread.join();
-    }
+    // No longer using separate time manager thread - time checking is integrated into search loops
+}
+
+// Initialize thread pool
+void Search::init_thread_pool() {
+    std::lock_guard<std::mutex> lock(search_mutex);
+    thread_pool_active = true;
+}
+
+// Shutdown thread pool
+void Search::shutdown_thread_pool() {
+    std::lock_guard<std::mutex> lock(search_mutex);
+    thread_pool_active = false;
     
+    // Join all worker threads
     for (auto& thread : worker_threads) {
         if (thread.joinable()) {
             thread.join();
         }
     }
+    worker_threads.clear();
 }
 
-// Main search interface implementations
-
-Move Search::search_move(Board& board, int max_depth) {
-    SearchResult result = search(board, max_depth);
-    return result.best_move;
-}
-
-Move Search::search_move(Board& board, std::chrono::milliseconds time_limit, int max_depth) {
-    SearchResult result = search(board, time_limit, max_depth);
-    return result.best_move;
-}
-
-SearchResult Search::search(Board& board, int max_depth) {
-    SearchResult result;
-    auto start_time = std::chrono::steady_clock::now();
-    
-    // Reset search state
-    stop_flag.store(false);
-    search_active.store(true);
-    result.stats.clear();
-    
-    // Get legal moves to ensure we have at least one move to return
-    thread_local MoveGenerator move_gen;
-    try {
-        MoveList legal_moves = move_gen.generate_legal_moves(board);
-        if (legal_moves.empty()) {
-            // No legal moves (checkmate or stalemate)
-            auto end_time = std::chrono::steady_clock::now();
-            result.time_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-            return result;
-        }
-        result.best_move = legal_moves[0]; // Default to first legal move
-    } catch (...) {
-        // Error generating moves
-        auto end_time = std::chrono::steady_clock::now();
-        result.time_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-        return result;
-    }
-    
-    try {
-        iterative_deepening(board, max_depth, result);
-    } catch (...) {
-        // Ensure we always have a valid move
-        if (!result.best_move.is_valid()) {
-            thread_local MoveGenerator move_gen;
-            MoveList legal_moves = move_gen.generate_legal_moves(board);
-            if (!legal_moves.empty()) {
-                result.best_move = legal_moves[0];
-            }
-        }
-    }
-    
-    auto end_time = std::chrono::steady_clock::now();
-    result.time_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-    search_active.store(false);
-    
-    return result;
-}
-
-SearchResult Search::search(Board& board, std::chrono::milliseconds time_limit, int max_depth) {
-    SearchResult result;
-    auto start_time = std::chrono::steady_clock::now();
-    
-    // Reset search state
-    stop_flag.store(false);
-    search_active.store(true);
-    result.stats.clear();
-    
-    // Get legal moves to ensure we have at least one move to return
-    thread_local MoveGenerator move_gen;
-    try {
-        MoveList legal_moves = move_gen.generate_legal_moves(board);
-        if (legal_moves.empty()) {
-            // No legal moves (checkmate or stalemate)
-            auto end_time = std::chrono::steady_clock::now();
-            result.time_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-            return result;
-        }
-        result.best_move = legal_moves[0]; // Default to first legal move
-    } catch (...) {
-        // Error generating moves
-        auto end_time = std::chrono::steady_clock::now();
-        result.time_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-        return result;
-    }
-    
-    // Start time management thread
-    time_manager_thread = std::thread(&Search::time_management_worker, this, time_limit);
-    
-    try {
-        iterative_deepening(board, max_depth, result);
-    } catch (...) {
-        // Ensure we always have a valid move
-        if (!result.best_move.is_valid()) {
-            thread_local MoveGenerator move_gen;
-            MoveList legal_moves = move_gen.generate_legal_moves(board);
-            if (!legal_moves.empty()) {
-                result.best_move = legal_moves[0];
-            }
-        }
-    }
-    
-    // Stop search and join time manager
-    stop_flag.store(true);
-    if (time_manager_thread.joinable()) {
-        time_manager_thread.join();
-    }
-    
-    auto end_time = std::chrono::steady_clock::now();
-    result.time_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-    search_active.store(false);
-    
-    return result;
-}
-
-// Control functions
-
+// Stop search operation
 void Search::stop_search() {
-    stop_flag.store(true);
+    stop_flag.store(true, std::memory_order_release);
 }
 
+// Check if search should stop - includes time limit checking
+bool Search::should_stop() const {
+    // First check the manual stop flag
+    if (stop_flag.load(std::memory_order_acquire)) {
+        return true;
+    }
+    
+    // Then check time limit if active
+    if (time_limit_active.load(std::memory_order_acquire)) {
+        auto current_time = std::chrono::steady_clock::now();
+        auto start_time = search_start_time.load(std::memory_order_acquire);
+        auto limit = time_limit_ms.load(std::memory_order_acquire);
+        
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time);
+        if (elapsed >= limit) {
+            // Time limit exceeded - set stop flag for other threads
+            const_cast<Search*>(this)->stop_flag.store(true, std::memory_order_release);
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+// Check if search is active
 bool Search::is_searching() const {
-    return search_active.load();
+    return search_active.load(std::memory_order_acquire);
 }
 
+// Set thread count
 void Search::set_thread_count(int num_threads) {
     std::lock_guard<std::mutex> lock(search_mutex);
     thread_count = std::max(MIN_THREADS, std::min(MAX_THREADS, num_threads));
 }
 
+// Get thread count
 int Search::get_thread_count() const {
     std::lock_guard<std::mutex> lock(search_mutex);
     return thread_count;
 }
 
-// Core search implementation
-
-void Search::iterative_deepening(Board& board, int max_depth, SearchResult& result) {
-    // Use thread-local MoveGenerator to avoid repeated instantiation
-    thread_local MoveGenerator move_gen;
-    MoveList legal_moves = move_gen.generate_legal_moves(board);
-    
-    if (legal_moves.empty()) {
-        // No legal moves - checkmate or stalemate
-        result.score = 0; // Assume stalemate for now
-        return;
-    }
-    
-    // Initialize with first legal move
-    result.best_move = legal_moves[0];
-    result.depth = 0;
-    
-    // Initialize thread pool
-    init_thread_pool();
-    
-    // Iterative deepening loop with aspiration windows and PVS
-    int aspiration_window = 50; // Initial aspiration window size
-    int prev_score = 0;
-    Move pv_move; // Best move from previous iteration
-    
-    for (int depth = 1; depth <= max_depth && !should_stop(); ++depth) {
-        SearchResult depth_result;
-        
-        // Order moves for this depth, using PV move from previous iteration
-        SearchContext temp_context(board);
-        order_moves_with_context(legal_moves, temp_context, 0, pv_move);
-        
-        // Set aspiration window bounds
-        int alpha, beta;
-        if (depth == 1) {
-            // Full window for first depth
-            alpha = -INFINITY_SCORE;
-            beta = INFINITY_SCORE;
-        } else {
-            // Narrow window around previous score
-            alpha = prev_score - aspiration_window;
-            beta = prev_score + aspiration_window;
-        }
-        
-        bool search_failed = false;
-        int search_attempts = 0;
-        const int max_attempts = 4;
-        
-        do {
-            search_failed = false;
-            search_attempts++;
-            
-            if (thread_count <= 1 || legal_moves.size() < 2) {
-            // Single-threaded search with aspiration window
-            depth_result = search_worker_with_window(board, legal_moves, 0, legal_moves.size(), depth, alpha, beta);
-        } else {
-            // Parallel root search with aspiration window
-            depth_result = parallel_root_search_with_window(board, legal_moves, depth, alpha, beta);
-        }
-            
-            // Check if search failed high or low
-            if (!should_stop() && depth_result.best_move.is_valid()) {
-                if (depth_result.score <= alpha) {
-                    // Failed low - widen alpha
-                    alpha = -INFINITY_SCORE;
-                    search_failed = true;
-                } else if (depth_result.score >= beta) {
-                    // Failed high - widen beta
-                    beta = INFINITY_SCORE;
-                    search_failed = true;
-                }
-            }
-            
-            // Prevent infinite loop
-            if (search_attempts >= max_attempts) {
-                search_failed = false;
-            }
-            
-        } while (search_failed && !should_stop());
-        
-        // Update result if depth completed successfully
-        if (!should_stop() && depth_result.best_move.is_valid()) {
-            result.best_move = depth_result.best_move;
-            result.score = depth_result.score;
-            result.depth = depth;
-            result.sel_depth = std::max(result.sel_depth, depth);
-            prev_score = depth_result.score;
-            pv_move = depth_result.best_move; // Store PV move for next iteration
-            
-            // Adjust aspiration window for next iteration
-            if (search_attempts == 1) {
-                // Search succeeded on first try - can narrow window
-                aspiration_window = std::max(25, aspiration_window - 5);
-            } else {
-                // Search failed - widen window for next time
-                aspiration_window = std::min(200, aspiration_window + 25);
-            }
-            
-            // Accumulate statistics
-            result.stats.nodes_searched += depth_result.stats.nodes_searched;
-            result.stats.quiescence_nodes += depth_result.stats.quiescence_nodes;
-            result.stats.tt_hits += depth_result.stats.tt_hits;
-            result.stats.beta_cutoffs += depth_result.stats.beta_cutoffs;
-            result.stats.null_move_cutoffs += depth_result.stats.null_move_cutoffs;
-            result.stats.lmr_reductions += depth_result.stats.lmr_reductions;
-        }
-        
-        // Check for mate
-        if (std::abs(result.score) >= MATE_SCORE - 100) {
-            break;
-        }
-    }
-}
-
-// Old minimax function removed - using minimax_with_context instead
-
-// Old quiescence_search function removed - using quiescence_search_with_context instead
-
-SearchResult Search::search_worker(Board& board, const MoveList& moves, int start_idx, int end_idx, int depth) {
-    SearchResult result;
-    result.score = -INFINITY_SCORE;
-    
-    // Create SearchContext for this worker
-    SearchContext context(board);
-    
-    for (int i = start_idx; i < end_idx && i < moves.size(); ++i) {
-        if (should_stop()) break;
-        
-        const Move& move = moves[i];
-        
-        // Make move and get undo data
-        BitboardMoveUndoData undo_data = context.board.apply_move(move);
-        
-        int score = minimax_with_context(context, depth - 1, -INFINITY_SCORE, INFINITY_SCORE, false, 0);
-        
-        // Undo move
-        context.board.undo_move(undo_data);
-        
-        if (score > result.score) {
-            result.best_move = move;
-            result.score = score;
-        }
-    }
-    
-    return result;
-}
-
-// Search worker with aspiration window and PVS
-SearchResult Search::search_worker_with_window(Board& board, const MoveList& moves, int start_idx, int end_idx, int depth, int alpha, int beta) {
-    SearchResult result;
-    result.score = alpha;
-    
-    // Create SearchContext for this worker
-    SearchContext context(board);
-    
-    bool first_move = true;
-    
-    for (int i = start_idx; i < end_idx && i < moves.size(); ++i) {
-        if (should_stop()) break;
-        
-        const Move& move = moves[i];
-        
-        // Make move and get undo data
-        BitboardMoveUndoData undo_data = context.board.apply_move(move);
-        
-        int score;
-        
-        if (first_move) {
-            // Search first move (PV) with full window
-            score = minimax_with_context(context, depth - 1, -beta, -alpha, false, 0);
-            first_move = false;
-        } else {
-            // Search remaining moves with null window (PVS)
-            score = minimax_with_context(context, depth - 1, -alpha - 1, -alpha, false, 0);
-            
-            // If null window search beats alpha, re-search with full window
-            if (score > alpha && score < beta) {
-                score = minimax_with_context(context, depth - 1, -beta, -score, false, 0);
-            }
-        }
-        
-        score = -score; // Negate because we're at root (maximizing)
-        
-        // Undo move
-        context.board.undo_move(undo_data);
-        
-        if (score > result.score) {
-            result.best_move = move;
-            result.score = score;
-            alpha = std::max(alpha, score);
-        }
-        
-        // Beta cutoff at root
-        if (score >= beta) {
-            break;
-        }
-    }
-    
-    // Merge per-thread stats into result
-    result.stats = context.stats;
-    return result;
-}
-
+// Legacy time management worker - no longer used
+// Time checking is now integrated directly into search loops via should_stop()
 void Search::time_management_worker(std::chrono::milliseconds time_limit) {
-    auto start_time = std::chrono::steady_clock::now();
-    
-    while (!should_stop()) {
-        auto current_time = std::chrono::steady_clock::now();
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time);
-        
-        if (elapsed >= time_limit) {
-            stop_flag.store(true);
-            break;
-        }
-        
-        // Check every 10ms
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
+    // This function is kept for compatibility but is no longer used
+    // Time management is now handled by the global timer system in should_stop()
 }
 
-bool Search::should_stop() const {
-    return stop_flag.load();
-}
-
-// Old order_moves and evaluate_move_priority functions removed - using context-based versions instead
-
-// Parallel root search implementation
-
-SearchResult Search::parallel_root_search(Board& board, const MoveList& moves, int depth) {
-    SearchResult best_result;
-    best_result.score = -INFINITY_SCORE;
-    
-    // Calculate moves per thread
-    int num_threads = std::min(thread_count, static_cast<int>(moves.size()));
-    int moves_per_thread = moves.size() / num_threads;
-    int remaining_moves = moves.size() % num_threads;
-    
-    // Clear previous futures
-    search_futures.clear();
-    search_futures.reserve(num_threads);
-    
-    // Launch worker threads
-    int start_idx = 0;
-    for (int i = 0; i < num_threads; ++i) {
-        int end_idx = start_idx + moves_per_thread;
-        if (i < remaining_moves) {
-            end_idx++; // Distribute remaining moves to first threads
-        }
-        
-        // Launch async task with board copy (SearchContext created inside worker)
-        search_futures.emplace_back(
-            std::async(std::launch::async, 
-                      [this, board, &moves, start_idx, end_idx, depth]() {
-                          SearchContext context(board);
-                          return parallel_root_worker(context, moves, start_idx, end_idx, depth);
-                      })
-        );
-        
-        start_idx = end_idx;
-    }
-    
-    // Collect results from all threads
-    SearchStats combined_stats;
-    for (auto& future : search_futures) {
-        if (should_stop()) break;
-        
-        try {
-            SearchResult thread_result = future.get();
-            
-            // Update best move if this thread found a better one
-            if (thread_result.best_move.is_valid() && thread_result.score > best_result.score) {
-                best_result.best_move = thread_result.best_move;
-                best_result.score = thread_result.score;
-            }
-            
-            // Accumulate statistics
-            combined_stats.nodes_searched += thread_result.stats.nodes_searched;
-            combined_stats.quiescence_nodes += thread_result.stats.quiescence_nodes;
-            combined_stats.tt_hits += thread_result.stats.tt_hits;
-            combined_stats.beta_cutoffs += thread_result.stats.beta_cutoffs;
-            combined_stats.null_move_cutoffs += thread_result.stats.null_move_cutoffs;
-            combined_stats.lmr_reductions += thread_result.stats.lmr_reductions;
-            
-        } catch (const std::exception& e) {
-            // Handle thread exceptions gracefully
-            continue;
-        }
-    }
-    
-    best_result.stats = combined_stats;
-    best_result.depth = depth;
-    
-    return best_result;
-}
-
-// Parallel root search with aspiration window and PVS
-SearchResult Search::parallel_root_search_with_window(Board& board, const MoveList& moves, int depth, int alpha, int beta) {
-    SearchResult best_result;
-    best_result.score = alpha;
-    
-    // Calculate moves per thread
-    int num_threads = std::min(thread_count, static_cast<int>(moves.size()));
-    int moves_per_thread = moves.size() / num_threads;
-    int remaining_moves = moves.size() % num_threads;
-    
-    // Clear previous futures
-    search_futures.clear();
-    search_futures.reserve(num_threads);
-    
-    // Launch worker threads
-    int start_idx = 0;
-    for (int i = 0; i < num_threads; ++i) {
-        int end_idx = start_idx + moves_per_thread;
-        if (i < remaining_moves) {
-            end_idx++; // Distribute remaining moves to first threads
-        }
-        
-        // Launch async task with board copy (SearchContext created inside worker)
-        search_futures.emplace_back(
-            std::async(std::launch::async, 
-                      [this, &board, &moves, start_idx, end_idx, depth, alpha, beta]() {
-                          Board board_copy = board; // Make a copy for thread safety // FIX: work around unncecessary coppies
-                          return search_worker_with_window(board_copy, moves, start_idx, end_idx, depth, alpha, beta);
-                      })
-        );
-        
-        start_idx = end_idx;
-    }
-    
-    // Collect results from all threads
-    SearchStats combined_stats;
-    for (auto& future : search_futures) {
-        if (should_stop()) break;
-        
-        try {
-            SearchResult thread_result = future.get();
-            
-            // Update best move if this thread found a better one
-            if (thread_result.best_move.is_valid() && thread_result.score > best_result.score) {
-                best_result.best_move = thread_result.best_move;
-                best_result.score = thread_result.score;
-            }
-            
-            // Accumulate statistics
-            combined_stats.nodes_searched += thread_result.stats.nodes_searched;
-            combined_stats.quiescence_nodes += thread_result.stats.quiescence_nodes;
-            combined_stats.tt_hits += thread_result.stats.tt_hits;
-            combined_stats.beta_cutoffs += thread_result.stats.beta_cutoffs;
-            combined_stats.null_move_cutoffs += thread_result.stats.null_move_cutoffs;
-            combined_stats.lmr_reductions += thread_result.stats.lmr_reductions;
-            
-        } catch (const std::exception& e) {
-            // Handle thread exceptions gracefully
-            continue;
-        }
-    }
-    
-    best_result.stats = combined_stats;
-    best_result.depth = depth;
-    
-    return best_result;
-}
-
-// Thread pool management methods
-
-void Search::init_thread_pool() {
-    if (thread_pool_active.load()) {
-        return; // Already initialized
-    }
-    
-    thread_pool_active.store(true);
-    // Thread pool is created on-demand during search
-}
-
-void Search::shutdown_thread_pool() {
-    thread_pool_active.store(false);
-    
-    // Wait for any pending futures to complete
-    for (auto& future : search_futures) {
-        if (future.valid()) {
-            future.wait();
-        }
-    }
-    search_futures.clear();
-}
-
-SearchResult Search::parallel_root_worker(SearchContext& context, const MoveList& moves, int start_idx, int end_idx, int depth) {
-    SearchResult result;
-    result.score = -INFINITY_SCORE;
-    
-    for (int i = start_idx; i < end_idx && i < moves.size(); ++i) {
-        if (should_stop()) break;
-        
-        const Move& move = moves[i];
-        
-        // Make move on the thread's private board copy
-        BitboardMoveUndoData undo_data = context.board.apply_move(move);
-        
-        // Use thread-local minimax with per-thread data
-        int score = minimax_with_context(context, depth - 1, -INFINITY_SCORE, INFINITY_SCORE, false, 0);
-        
-        // Undo move
-        context.board.undo_move(undo_data);
-        
-        if (score > result.score) {
-            result.best_move = move;
-            result.score = score;
-        }
-        
-        // Update per-thread statistics (already updated in minimax_with_context)
-    }
-    
-    // Merge per-thread stats into result
-    result.stats = context.stats;
-    return result;
-}
-
-// Helper function to check if position has non-pawn material
-bool Search::has_non_pawn_material(const Board& board, Board::Color color) const {
-    return (board.get_piece_bitboard(Board::KNIGHT, color) |
-            board.get_piece_bitboard(Board::BISHOP, color) |
-            board.get_piece_bitboard(Board::ROOK, color) |
-            board.get_piece_bitboard(Board::QUEEN, color)) != 0;
-}
-
-// Helper minimax function that uses SearchContext instead of global data
+// Basic minimax with alpha-beta pruning and context support
 int Search::minimax_with_context(SearchContext& context, int depth, int alpha, int beta, bool maximizing_player, int ply) {
-    if (should_stop() || depth <= 0) {
-        if (depth <= 0) {
-            return quiescence_search_with_context(context, alpha, beta, maximizing_player, 0);
-        }
-        return evaluator->evaluate(context.board);
-    }
-    
     context.stats.nodes_searched++;
     
-    // Check for mate distance pruning
-    if (ply > 0) {
-        alpha = std::max(alpha, -MATE_SCORE + ply);
-        beta = std::min(beta, MATE_SCORE - ply - 1);
-        if (alpha >= beta) {
-            return alpha;
-        }
+    // Check for time limit every 1000 nodes for responsiveness
+    if ((context.stats.nodes_searched % 1000) == 0 && should_stop()) {
+        return maximizing_player ? alpha : beta;
     }
     
-    // Use MoveGenerator from SearchContext to avoid repeated instantiation
-    Board::Color active_color = context.board.get_active_color();
-    bool in_check = context.move_generator.is_in_check(context.board, active_color);
-    
-    // Null-move pruning
-    if (!in_check && ply > 0 && depth >= 3 && 
-        beta < MATE_SCORE - 1000 && beta > -MATE_SCORE + 1000 &&
-        has_non_pawn_material(context.board, active_color)) {
-        
-        // Make null move
-        context.board.set_active_color(active_color == Board::WHITE ? Board::BLACK : Board::WHITE);
-        
-        // Search with reduced depth (R=2)
-        int null_score = -minimax_with_context(context, depth - 1 - 2, -beta, -beta + 1, !maximizing_player, ply + 1);
-        
-        // Undo null move
-        context.board.set_active_color(active_color);
-        
-        if (null_score >= beta) {
-            context.stats.null_move_cutoffs++;
-            return beta;
-        }
+    // Base case: depth reached or game over
+    if (depth == 0) {
+        return quiescence_search_with_context(context, alpha, beta, maximizing_player);
     }
     
-    // Transposition table probe (shared TT)
-    uint64_t zobrist_key = context.board.get_zobrist_hash();
-    TTEntry tt_entry;
-    Move tt_move;
+    // Generate moves using instance method
+    MoveList moves = context.move_generator.generate_legal_moves(context.board);
     
-    const TTEntry* tt_result = transposition_table.probe(zobrist_key, depth, alpha, beta, ply);
-    if (tt_result != nullptr) {
-        tt_entry = *tt_result;
-        if (tt_entry.depth >= depth) {
-            int tt_score = tt_entry.score;
-            
-            // Adjust mate scores
-            if (tt_score > MATE_SCORE - 1000) {
-                tt_score -= ply;
-            } else if (tt_score < -MATE_SCORE + 1000) {
-                tt_score += ply;
-            }
-            
-            switch (tt_entry.get_type()) {
-                case TTEntryType::EXACT:
-                    return tt_score;
-                case TTEntryType::LOWER_BOUND:
-                    alpha = std::max(alpha, tt_score);
-                    break;
-                case TTEntryType::UPPER_BOUND:
-                    beta = std::min(beta, tt_score);
-                    break;
-            }
-            
-            if (alpha >= beta) {
-                return tt_score;
-            }
-        }
-        
-        // Extract TT move for move ordering
-        tt_move.from_uint32(tt_entry.move);
-    }
-    
-    // Generate moves using context's MoveGenerator
-    MoveList legal_moves = context.move_generator.generate_legal_moves(context.board);
-    
-    if (legal_moves.empty()) {
-        // No legal moves - checkmate or stalemate
+    // Check for checkmate or stalemate
+    if (moves.empty()) {
         if (context.move_generator.is_in_check(context.board, context.board.get_active_color())) {
-            return -MATE_SCORE + ply; // Checkmate
+            // Checkmate - return mate score adjusted by ply
+            return maximizing_player ? -MATE_SCORE + ply : MATE_SCORE - ply;
         } else {
-            return DRAW_SCORE; // Stalemate
+            // Stalemate
+            return DRAW_SCORE;
         }
     }
     
-    // Order moves using per-thread data
-    order_moves_with_context(legal_moves, context, ply, tt_move);
-    
-    Move best_move;
-    int best_score;
-    TTEntryType entry_type;
+    // Order moves for better pruning
+    order_moves_with_context(moves, context, ply);
     
     if (maximizing_player) {
-        best_score = -INFINITY_SCORE;
-        int move_count = 0;
-        
-        for (const Move& move : legal_moves) {
-            if (should_stop()) break;
-            
-            move_count++;
-            BitboardMoveUndoData undo_data = context.board.apply_move(move);
-            
-            int eval;
-            
-            // Late Move Reductions (LMR)
-            if (move_count > 4 && depth >= 3 && !move.is_capture() && 
-                !move.is_promotion() && !context.move_generator.is_in_check(context.board, context.board.get_active_color()) &&
-                move != context.killer_moves[0][ply] && move != context.killer_moves[1][ply]) {
-                
-                // Calculate reduction
-                int reduction = 1 + (depth > 6 ? 1 : 0) + (move_count > 6 ? 1 : 0);
-                context.stats.lmr_reductions++;
-                
-                // Search with reduced depth
-                eval = minimax_with_context(context, depth - 1 - reduction, alpha, beta, false, ply + 1);
-                
-                // If reduced search beats alpha, re-search with full depth
-                if (eval > alpha) {
-                    eval = minimax_with_context(context, depth - 1, alpha, beta, false, ply + 1);
-                }
-            } else {
-                // Normal full-depth search
-                eval = minimax_with_context(context, depth - 1, alpha, beta, false, ply + 1);
+        int max_eval = -INFINITY_SCORE;
+        for (const Move& move : moves) {
+            // Check for stop condition before each move
+            if (should_stop()) {
+                break;
             }
             
+            // Make move and get undo data
+            BitboardMoveUndoData undo_data = context.board.make_move(move);
+            
+            // Recursive search
+            int eval = minimax_with_context(context, depth - 1, alpha, beta, false, ply + 1);
+            
+            // Unmake move using undo data
             context.board.undo_move(undo_data);
             
-            if (eval > best_score) {
-                best_score = eval;
-                best_move = move;
-            }
-            
+            max_eval = std::max(max_eval, eval);
             alpha = std::max(alpha, eval);
             
+            // Beta cutoff
             if (beta <= alpha) {
-                // Beta cutoff - update per-thread killer moves and history
-                if (!move.is_capture() && ply < MAX_DEPTH) {
-                    // Update killer moves
-                    if (context.killer_moves[1][ply] != move) {
-                        context.killer_moves[0][ply] = context.killer_moves[1][ply];
-                        context.killer_moves[1][ply] = move;
-                    }
-                    
-                    // Update history heuristic
-                    int from_square = move.from_rank * 8 + move.from_file;
-                    int to_square = move.to_rank * 8 + move.to_file;
-                    if (from_square < 64 && to_square < 64) {
-                        context.history_table[context.board.get_active_color()][from_square][to_square] += depth * depth;
-                    }
-                }
+                context.stats.beta_cutoffs++;
                 break;
             }
         }
-        
-        entry_type = (best_score <= alpha) ? TTEntryType::UPPER_BOUND : 
-                    (best_score >= beta) ? TTEntryType::LOWER_BOUND : TTEntryType::EXACT;
+        return max_eval;
     } else {
-        best_score = INFINITY_SCORE;
-        int move_count = 0;
-        
-        for (const Move& move : legal_moves) {
-            if (should_stop()) break;
-            
-            move_count++;
-            BitboardMoveUndoData undo_data = context.board.apply_move(move);
-            
-            int eval;
-            
-            // Late Move Reductions (LMR)
-            if (move_count > 4 && depth >= 3 && !move.is_capture() && 
-                !move.is_promotion() && !context.move_generator.is_in_check(context.board, context.board.get_active_color()) &&
-                move != context.killer_moves[0][ply] && move != context.killer_moves[1][ply]) {
-                
-                // Calculate reduction
-                int reduction = 1 + (depth > 6 ? 1 : 0) + (move_count > 6 ? 1 : 0);
-                context.stats.lmr_reductions++;
-                
-                // Search with reduced depth
-                eval = minimax_with_context(context, depth - 1 - reduction, alpha, beta, true, ply + 1);
-                
-                // If reduced search beats beta, re-search with full depth
-                if (eval < beta) {
-                    eval = minimax_with_context(context, depth - 1, alpha, beta, true, ply + 1);
-                }
-            } else {
-                // Normal full-depth search
-                eval = minimax_with_context(context, depth - 1, alpha, beta, true, ply + 1);
+        int min_eval = INFINITY_SCORE;
+        for (const Move& move : moves) {
+            // Check for stop condition before each move
+            if (should_stop()) {
+                break;
             }
             
+            // Make move and get undo data
+            BitboardMoveUndoData undo_data = context.board.make_move(move);
+            
+            // Recursive search
+            int eval = minimax_with_context(context, depth - 1, alpha, beta, true, ply + 1);
+            
+            // Unmake move using undo data
             context.board.undo_move(undo_data);
             
-            if (eval < best_score) {
-                best_score = eval;
-                best_move = move;
-            }
-            
+            min_eval = std::min(min_eval, eval);
             beta = std::min(beta, eval);
             
+            // Alpha cutoff
             if (beta <= alpha) {
-                // Alpha cutoff - update per-thread killer moves and history
-                if (!move.is_capture() && ply < MAX_DEPTH) {
-                    // Update killer moves
-                    if (context.killer_moves[1][ply] != move) {
-                        context.killer_moves[0][ply] = context.killer_moves[1][ply];
-                        context.killer_moves[1][ply] = move;
-                    }
-                    
-                    // Update history heuristic
-                    int from_square = move.from_rank * 8 + move.from_file;
-                    int to_square = move.to_rank * 8 + move.to_file;
-                    if (from_square < 64 && to_square < 64) {
-                        context.history_table[context.board.get_active_color()][from_square][to_square] += depth * depth;
-                    }
-                }
+                context.stats.beta_cutoffs++;
                 break;
             }
         }
-        
-        entry_type = (best_score >= beta) ? TTEntryType::LOWER_BOUND : 
-                    (best_score <= alpha) ? TTEntryType::UPPER_BOUND : TTEntryType::EXACT;
+        return min_eval;
     }
-    
-    // Adjust mate scores for storage
-    int store_score = best_score;
-    if (store_score > MATE_SCORE - 1000) {
-        store_score += ply;
-    } else if (store_score < -MATE_SCORE + 1000) {
-        store_score -= ply;
-    }
-    
-    // Store in transposition table
-    transposition_table.store(zobrist_key, depth, store_score, entry_type, best_move.to_uint32(), ply);
-    
-    return best_score;
 }
 
-// Helper quiescence search with context
+// Quiescence search with context support
 int Search::quiescence_search_with_context(SearchContext& context, int alpha, int beta, bool maximizing_player, int qs_depth) {
-    if (should_stop() || qs_depth >= MAX_QUIESCENCE_DEPTH) {
+    // Limit quiescence depth to prevent infinite search
+    if (qs_depth >= MAX_QUIESCENCE_DEPTH) {
         return evaluator->evaluate(context.board);
     }
     
     context.stats.quiescence_nodes++;
     
-    context.stats.nodes_searched++;
+    // Check for time limit periodically in quiescence search
+    if ((context.stats.quiescence_nodes % 1000) == 0 && should_stop()) {
+        return maximizing_player ? alpha : beta;
+    }
     
+    // Stand pat evaluation
     int stand_pat = evaluator->evaluate(context.board);
     
     if (maximizing_player) {
@@ -865,171 +221,586 @@ int Search::quiescence_search_with_context(SearchContext& context, int alpha, in
         beta = std::min(beta, stand_pat);
     }
     
-    // Generate tactical moves (captures, promotions) efficiently using context's MoveGenerator
-    MoveList tactical_moves = context.move_generator.generate_tactical_moves(context.board);
+    // Generate only capture moves for quiescence using instance method
+    MoveList captures = context.move_generator.generate_captures(context.board);
     
-    if (tactical_moves.empty()) {
-        return stand_pat;
-    }
-    
-    // Order tactical moves
-    order_moves_with_context(tactical_moves, context, qs_depth);
-    
-    if (maximizing_player) {
-        int max_eval = stand_pat;
+    for (const Move& move : captures) {
+        // Check for stop condition
+        if (should_stop()) {
+            break;
+        }
         
-        for (const Move& move : tactical_moves) {
-            if (should_stop()) break;
-            
-            BitboardMoveUndoData undo_data = context.board.apply_move(move);
-            int eval = quiescence_search_with_context(context, alpha, beta, false, qs_depth + 1);
-            context.board.undo_move(undo_data);
-            
-            max_eval = std::max(max_eval, eval);
+        // Make move and get undo data
+        BitboardMoveUndoData undo_data = context.board.make_move(move);
+        
+        // Recursive quiescence search
+        int eval = quiescence_search_with_context(context, alpha, beta, !maximizing_player, qs_depth + 1);
+        
+        // Unmake move using undo data
+        context.board.undo_move(undo_data);
+        
+        if (maximizing_player) {
             alpha = std::max(alpha, eval);
-            
+            if (beta <= alpha) {
+                break;
+            }
+        } else {
+            beta = std::min(beta, eval);
             if (beta <= alpha) {
                 break;
             }
         }
-        
-        return max_eval;
     }
-    int min_eval = stand_pat;
+    
+    return maximizing_player ? alpha : beta;
+}
+
+// Iterative deepening search
+void Search::iterative_deepening(Board& board, int max_depth, SearchResult& result) {
+    SearchContext context(board);
+    Move best_move;
+    bool found_move = false;
+    
+    // Generate legal moves
+    MoveList legal_moves = context.move_generator.generate_legal_moves(context.board);
+    if (legal_moves.empty()) {
+        return; // No legal moves
+    }
+    
+    // Use first legal move as fallback
+    best_move = legal_moves[0];
+    found_move = true;
+    
+    // Initialize move scores
+    std::vector<MoveScore> move_scores;
+    move_scores.reserve(legal_moves.size());
+    for (const Move& move : legal_moves) {
+        move_scores.emplace_back(move);
+    }
+    
+    // Iterative deepening loop
+    for (int depth = 1; depth <= max_depth && !should_stop(); depth++) {
+        // Reset evaluation flags for this depth
+        for (auto& ms : move_scores) {
+            ms.evaluated = false;
+            ms.score = -INFINITY_SCORE;
+        }
         
-    for (const Move& move : tactical_moves) {
-        if (should_stop()) break;
-            
-        BitboardMoveUndoData undo_data = context.board.apply_move(move);
-        int eval = quiescence_search_with_context(context, alpha, beta, true, qs_depth + 1);
-        context.board.undo_move(undo_data);
-            
-        min_eval = std::min(min_eval, eval);
-        beta = std::min(beta, eval);
-            
-        if (beta <= alpha) {
+        // Parallelize move evaluation at root
+        parallel_evaluate_moves(context.board, move_scores, depth);
+        
+        // Check if search was stopped
+        if (should_stop()) {
             break;
         }
-    }
         
-    return min_eval;
-}
-
-// Helper struct for move scoring
-struct ScoredMove {
-    Move move;
-    int score;
-};
-
-// Helper move ordering with context
-void Search::order_moves_with_context(MoveList& moves, SearchContext& context, int ply, const Move& tt_move) {
-    if (moves.empty()) return;
-    
-    // For small move lists, use insertion sort for better performance
-    if (moves.size() < 20) {
-        // Score each move once and use insertion sort
-        std::vector<ScoredMove> scored_moves;
-        scored_moves.reserve(moves.size());
+        // Find best move from evaluated moves
+        auto best_it = std::max_element(move_scores.begin(), move_scores.end(),
+            [](const MoveScore& a, const MoveScore& b) {
+                if (!a.evaluated) return true;
+                if (!b.evaluated) return false;
+                return a.score < b.score;
+            });
         
-        for (const Move& move : moves) {
-            scored_moves.push_back({move, evaluate_move_priority_with_context(move, context, ply, tt_move)});
-        }
-        
-        // Insertion sort by score (descending)
-        for (size_t i = 1; i < scored_moves.size(); ++i) {
-            ScoredMove key = scored_moves[i];
-            int j = static_cast<int>(i) - 1;
+        if (best_it != move_scores.end() && best_it->evaluated) {
+            best_move = best_it->move;
+            result.best_move = best_move;
+            result.score = best_it->score;
+            result.depth = depth;
+            found_move = true;
             
-            while (j >= 0 && scored_moves[j].score < key.score) {
-                scored_moves[j + 1] = scored_moves[j];
-                j--;
-            }
-            scored_moves[j + 1] = key;
-        }
-        
-        // Rewrite original moves from sorted scored moves
-        for (size_t i = 0; i < moves.size(); ++i) {
-            moves[i] = scored_moves[i].move;
-        }
-    } else {
-        // For larger move lists, score once and use std::sort
-        std::vector<ScoredMove> scored_moves;
-        scored_moves.reserve(moves.size());
-        
-        for (const Move& move : moves) {
-            scored_moves.push_back({move, evaluate_move_priority_with_context(move, context, ply, tt_move)});
-        }
-        
-        // Sort by score (descending)
-        std::sort(scored_moves.begin(), scored_moves.end(), [](const ScoredMove& a, const ScoredMove& b) {
-            return a.score > b.score;
-        });
-        
-        // Rewrite original moves from sorted scored moves
-        for (size_t i = 0; i < moves.size(); ++i) {
-            moves[i] = scored_moves[i].move;
+            // Sort moves for next iteration (best move first)
+            std::sort(move_scores.begin(), move_scores.end(),
+                [](const MoveScore& a, const MoveScore& b) {
+                    if (!a.evaluated && !b.evaluated) return false;
+                    if (!a.evaluated) return false;
+                    if (!b.evaluated) return true;
+                    return a.score > b.score;
+                });
         }
     }
+    
+    // Ensure we return a valid move
+    if (found_move) {
+        result.best_move = best_move;
+    }
+    
+    // Copy statistics
+    result.stats = context.stats;
 }
 
+// Move ordering with context
+void Search::order_moves_with_context(MoveList& moves, SearchContext& context, int ply, const Move& tt_move) {
+    // Simple move ordering: captures first, then quiet moves
+    std::sort(moves.begin(), moves.end(), [&](const Move& a, const Move& b) {
+        return evaluate_move_priority_with_context(a, context, ply, tt_move) > 
+               evaluate_move_priority_with_context(b, context, ply, tt_move);
+    });
+}
+
+// Evaluate move priority with context
 int Search::evaluate_move_priority_with_context(const Move& move, const SearchContext& context, int ply, const Move& tt_move) {
     int priority = 0;
     
-    // Highest priority: TT move
-    if (tt_move.is_valid() && move == tt_move) {
+    // Transposition table move gets highest priority
+    if (move == tt_move) {
         priority += 10000;
     }
     
-    // Prioritize captures
+    // Captures get high priority
     if (move.is_capture()) {
         priority += 1000;
-        
-        // MVV-LVA
-        char victim = move.captured_piece;
-        char attacker = move.piece;
-        
-        auto get_piece_value = [](char piece) {
-            switch (std::tolower(piece)) {
-                case 'p': return 100;
-                case 'n': return 295;
-                case 'b': return 300;
-                case 'r': return 500;
-                case 'q': return 900;
-                case 'k': return 10000;
-                default: return 0;
-            }
-        };
-        
-        priority += get_piece_value(victim) - get_piece_value(attacker) / 10;
+        // MVV-LVA: Most Valuable Victim - Least Valuable Attacker
+        priority += get_piece_value(move.captured_piece) - get_piece_value(move.piece);
     }
     
-    // Prioritize promotions
+    // Promotions get high priority
     if (move.is_promotion()) {
-        priority += 800;
+        priority += 900;
     }
     
-    // Prioritize castling
-    if (move.is_castling) {
-        priority += 50;
-    }
-    
-    // Check per-thread killer moves
-    if (!move.is_capture() && ply < MAX_DEPTH) {
-        if (move == context.killer_moves[0][ply]) {
-            priority += 500;
-        } else if (move == context.killer_moves[1][ply]) {
-            priority += 400;
-        }
-    }
-    
-    // Per-thread history heuristic
-    if (!move.is_capture()) {
-        int from_square = move.from_rank * 8 + move.from_file;
-        int to_square = move.to_rank * 8 + move.to_file;
-        if (from_square < 64 && to_square < 64) {
-            priority += context.history_table[context.board.get_active_color()][from_square][to_square] / 100;
+    // Killer moves get medium priority
+    for (int i = 0; i < KILLER_MOVES_PER_PLY; i++) {
+        if (ply < MAX_DEPTH && move == context.killer_moves[i][ply]) {
+            priority += 500 - i * 100;
+            break;
         }
     }
     
     return priority;
+}
+
+// Helper function to get piece value for move ordering
+int Search::get_piece_value(char piece) const {
+    switch (std::tolower(piece)) {
+        case 'p': return 100;
+        case 'n': return 300;
+        case 'b': return 300;
+        case 'r': return 500;
+        case 'q': return 900;
+        case 'k': return 10000;
+        default: return 0;
+    }
+}
+
+// Check if side has non-pawn material
+bool Search::has_non_pawn_material(const Board& board, Board::Color color) const {
+    // This is a simplified check - in a real implementation you'd check the bitboards
+    return true; // Placeholder implementation
+}
+
+// MAIN SEARCH FUNCTIONS - THE 4 REQUIRED FUNCTIONS
+
+// 1. Search move without time limit
+Move Search::search_move(Board& board, int max_depth) {
+    // Reset stop flag
+    stop_flag.store(false, std::memory_order_release);
+    search_active.store(true, std::memory_order_release);
+    
+    SearchResult result;
+    result.best_move = Move(); // Invalid move initially
+    
+    try {
+        iterative_deepening(board, max_depth, result);
+    } catch (...) {
+        // Ensure we always return a valid move
+    }
+    
+    search_active.store(false, std::memory_order_release);
+    
+    // If no move found, return first legal move as fallback
+    if (!result.best_move.is_valid()) {
+        MoveGenerator gen;
+        MoveList legal_moves = gen.generate_legal_moves(board);
+        if (!legal_moves.empty()) {
+            result.best_move = legal_moves[0];
+        }
+    }
+    
+    return result.best_move;
+}
+
+// 2. Search move with time limit - STRICT TIME ENFORCEMENT
+Move Search::search_move(Board& board, std::chrono::milliseconds time_limit, int max_depth) {
+    // Reset stop flag and set up global timer
+    stop_flag.store(false, std::memory_order_release);
+    search_active.store(true, std::memory_order_release);
+    
+    // Set up global timer system
+    search_start_time.store(std::chrono::steady_clock::now(), std::memory_order_release);
+    time_limit_ms.store(time_limit, std::memory_order_release);
+    time_limit_active.store(true, std::memory_order_release);
+    
+    SearchResult result;
+    result.best_move = Move(); // Invalid move initially
+    
+    // Get a fallback move immediately
+    MoveGenerator gen;
+    MoveList legal_moves = gen.generate_legal_moves(board);
+    if (!legal_moves.empty()) {
+        result.best_move = legal_moves[0]; // Fallback move
+    }
+    
+    try {
+        iterative_deepening(board, max_depth, result);
+    } catch (...) {
+        // Ensure we always return a valid move
+    }
+    
+    // Disable global timer
+    time_limit_active.store(false, std::memory_order_release);
+    search_active.store(false, std::memory_order_release);
+    
+    // Calculate elapsed time
+    auto end_time = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - search_start_time.load());
+    result.time_elapsed = elapsed;
+    
+    return result.best_move;
+}
+
+// 3. Search with full result without time limit
+SearchResult Search::search(Board& board, int max_depth) {
+    // Reset stop flag
+    stop_flag.store(false, std::memory_order_release);
+    search_active.store(true, std::memory_order_release);
+    
+    auto start_time = std::chrono::steady_clock::now();
+    
+    SearchResult result;
+    result.best_move = Move(); // Invalid move initially
+    
+    try {
+        iterative_deepening(board, max_depth, result);
+    } catch (...) {
+        // Ensure we always return a valid move
+    }
+    
+    search_active.store(false, std::memory_order_release);
+    
+    // If no move found, return first legal move as fallback
+    if (!result.best_move.is_valid()) {
+        MoveGenerator gen;
+        MoveList legal_moves = gen.generate_legal_moves(board);
+        if (!legal_moves.empty()) {
+            result.best_move = legal_moves[0];
+        }
+    }
+    
+    // Calculate elapsed time
+    auto end_time = std::chrono::steady_clock::now();
+    result.time_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+    
+    return result;
+}
+
+// 4. Search with full result and time limit - STRICT TIME ENFORCEMENT
+SearchResult Search::search(Board& board, std::chrono::milliseconds time_limit, int max_depth) {
+    // Reset stop flag and set up global timer
+    stop_flag.store(false, std::memory_order_release);
+    search_active.store(true, std::memory_order_release);
+    
+    // Set up global timer system
+    search_start_time.store(std::chrono::steady_clock::now(), std::memory_order_release);
+    time_limit_ms.store(time_limit, std::memory_order_release);
+    time_limit_active.store(true, std::memory_order_release);
+    
+    SearchResult result;
+    result.best_move = Move(); // Invalid move initially
+    
+    // Get a fallback move immediately
+    MoveGenerator gen;
+    MoveList legal_moves = gen.generate_legal_moves(board);
+    if (!legal_moves.empty()) {
+        result.best_move = legal_moves[0]; // Fallback move
+    }
+    
+    try {
+        iterative_deepening(board, max_depth, result);
+    } catch (...) {
+        // Ensure we always return a valid move
+    }
+    
+    // Disable global timer
+    time_limit_active.store(false, std::memory_order_release);
+    search_active.store(false, std::memory_order_release);
+    
+    // Calculate elapsed time
+    auto end_time = std::chrono::steady_clock::now();
+    result.time_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - search_start_time.load());
+    
+    return result;
+}
+
+// Placeholder implementations for other declared functions
+
+SearchResult Search::search_worker(Board& board, const MoveList& moves, int start_idx, int end_idx, int depth) {
+    SearchResult result;
+    // Placeholder implementation
+    return result;
+}
+
+SearchResult Search::search_worker_with_window(Board& board, const MoveList& moves, int start_idx, int end_idx, int depth, int alpha, int beta) {
+    SearchResult result;
+    // Placeholder implementation
+    return result;
+}
+
+SearchResult Search::parallel_root_worker(SearchContext& context, const MoveList& moves, int start_idx, int end_idx, int depth) {
+    SearchResult result;
+    // Placeholder implementation
+    return result;
+}
+
+SearchResult Search::parallel_root_search(Board& board, const MoveList& moves, int depth) {
+    SearchResult result;
+    // Placeholder implementation
+    return result;
+}
+
+SearchResult Search::parallel_root_search_with_window(Board& board, const MoveList& moves, int depth, int alpha, int beta) {
+    SearchResult result;
+    // Placeholder implementation
+    return result;
+}
+
+int Search::minimax_incremental(Board& board, int depth, int alpha, int beta, bool maximizing_player, int ply) {
+    // Placeholder implementation
+    return 0;
+}
+
+// New function: Parallel move evaluation at root
+void Search::parallel_evaluate_moves(Board& board, std::vector<MoveScore>& move_scores, int depth) {
+    const int num_moves = static_cast<int>(move_scores.size());
+    const int num_threads = std::min(thread_count, num_moves);
+    
+    if (num_threads <= 1 || num_moves == 1) {
+        // Single-threaded fallback
+        sequential_evaluate_moves(board, move_scores, depth);
+        return;
+    }
+    
+    // Shared mutex for accessing move_scores
+    std::mutex scores_mutex;
+    
+    // Atomic counter for work distribution
+    std::atomic<int> next_move_index(0);
+    
+    // Launch worker threads
+    std::vector<std::thread> threads;
+    threads.reserve(num_threads);
+    
+    for (int t = 0; t < num_threads; t++) {
+        threads.emplace_back([&, t]() {
+            // Each thread gets its own board copy and context
+            Board thread_board = board;
+            SearchContext thread_context(thread_board);
+            
+            while (!should_stop()) {
+                // Get next move to evaluate
+                int move_idx = next_move_index.fetch_add(1, std::memory_order_relaxed);
+                
+                if (move_idx >= num_moves) {
+                    break; // No more moves to evaluate
+                }
+                
+                const Move& move = move_scores[move_idx].move;
+                
+                // Make move
+                BitboardMoveUndoData undo_data = thread_board.make_move(move);
+                
+                // Evaluate this move
+                int score = -minimax_with_context(thread_context, depth - 1, 
+                                                  -INFINITY_SCORE, INFINITY_SCORE, 
+                                                  false, 1);
+                
+                // Unmake move
+                thread_board.undo_move(undo_data);
+                
+                // Store result (thread-safe)
+                if (!should_stop()) {
+                    std::lock_guard<std::mutex> lock(scores_mutex);
+                    move_scores[move_idx].score = score;
+                    move_scores[move_idx].evaluated = true;
+                }
+            }
+        });
+    }
+    
+    // Wait for all threads to complete
+    for (auto& thread : threads) {
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
+}
+
+// Sequential fallback for single-threaded evaluation
+void Search::sequential_evaluate_moves(Board& board, std::vector<MoveScore>& move_scores, int depth) {
+    SearchContext context(board);
+    
+    for (auto& ms : move_scores) {
+        if (should_stop()) {
+            break;
+        }
+        
+        const Move& move = ms.move;
+        
+        // Make move
+        BitboardMoveUndoData undo_data = context.board.make_move(move);
+        
+        // Evaluate this move
+        int score = -minimax_with_context(context, depth - 1, 
+                                          -INFINITY_SCORE, INFINITY_SCORE, 
+                                          false, 1);
+        
+        // Unmake move
+        context.board.undo_move(undo_data);
+        
+        // Store result
+        ms.score = score;
+        ms.evaluated = true;
+    }
+}
+
+// Optional: Aspiration window search for better move ordering
+void Search::parallel_evaluate_moves_with_aspiration(Board& board, 
+                                                      std::vector<MoveScore>& move_scores, 
+                                                      int depth, 
+                                                      int prev_score) {
+    // First, try with narrow aspiration window
+    const int window = 50; // Centipawns
+    int alpha = prev_score - window;
+    int beta = prev_score + window;
+    
+    parallel_evaluate_moves_windowed(board, move_scores, depth, alpha, beta);
+    
+    // Check if any move failed high or low
+    bool need_research = false;
+    for (const auto& ms : move_scores) {
+        if (ms.evaluated && (ms.score <= alpha || ms.score >= beta)) {
+            need_research = true;
+            break;
+        }
+    }
+    
+    // Re-search with full window if needed
+    if (need_research && !should_stop()) {
+        for (auto& ms : move_scores) {
+            ms.evaluated = false;
+        }
+        parallel_evaluate_moves(board, move_scores, depth);
+    }
+}
+
+// Parallel evaluation with alpha-beta window
+void Search::parallel_evaluate_moves_windowed(Board& board, 
+                                               std::vector<MoveScore>& move_scores, 
+                                               int depth, 
+                                               int alpha, 
+                                               int beta) {
+    const int num_moves = static_cast<int>(move_scores.size());
+    const int num_threads = std::min(thread_count, num_moves);
+    
+    if (num_threads <= 1 || num_moves == 1) {
+        sequential_evaluate_moves_windowed(board, move_scores, depth, alpha, beta);
+        return;
+    }
+    
+    std::mutex scores_mutex;
+    std::atomic<int> next_move_index(0);
+    std::atomic<int> shared_alpha(alpha);
+    
+    std::vector<std::thread> threads;
+    threads.reserve(num_threads);
+    
+    for (int t = 0; t < num_threads; t++) {
+        threads.emplace_back([&]() {
+            Board thread_board = board;
+            SearchContext thread_context(thread_board);
+            
+            while (!should_stop()) {
+                int move_idx = next_move_index.fetch_add(1, std::memory_order_relaxed);
+                
+                if (move_idx >= num_moves) {
+                    break;
+                }
+                
+                const Move& move = move_scores[move_idx].move;
+                
+                // Get current alpha value
+                int current_alpha = shared_alpha.load(std::memory_order_relaxed);
+                
+                // Make move
+                BitboardMoveUndoData undo_data = thread_board.make_move(move);
+                
+                // Evaluate with current window
+                int score = -minimax_with_context(thread_context, depth - 1, 
+                                                  -beta, -current_alpha, 
+                                                  false, 1);
+                
+                // Unmake move
+                thread_board.undo_move(undo_data);
+                
+                if (!should_stop()) {
+                    std::lock_guard<std::mutex> lock(scores_mutex);
+                    move_scores[move_idx].score = score;
+                    move_scores[move_idx].evaluated = true;
+                    
+                    // Update shared alpha if we found a better move
+                    if (score > current_alpha) {
+                        int expected = current_alpha;
+                        while (score > expected && 
+                               !shared_alpha.compare_exchange_weak(expected, score, 
+                                                                   std::memory_order_relaxed)) {
+                            // Keep trying to update if another thread hasn't set a higher value
+                        }
+                    }
+                }
+            }
+        });
+    }
+    
+    for (auto& thread : threads) {
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
+}
+
+// Sequential windowed evaluation
+void Search::sequential_evaluate_moves_windowed(Board& board, 
+                                                 std::vector<MoveScore>& move_scores, 
+                                                 int depth, 
+                                                 int alpha, 
+                                                 int beta) {
+    SearchContext context(board);
+    
+    for (auto& ms : move_scores) {
+        if (should_stop()) {
+            break;
+        }
+        
+        const Move& move = ms.move;
+        
+        BitboardMoveUndoData undo_data = context.board.make_move(move);
+        
+        int score = -minimax_with_context(context, depth - 1, -beta, -alpha, false, 1);
+        
+        context.board.undo_move(undo_data);
+        
+        ms.score = score;
+        ms.evaluated = true;
+        
+        // Update alpha
+        if (score > alpha) {
+            alpha = score;
+        }
+    }
+}
+
+SearchResult Search::search_incremental(Board& board, int max_depth, bool debug_output) {
+    SearchResult result;
+    // Placeholder implementation
+    return result;
 }

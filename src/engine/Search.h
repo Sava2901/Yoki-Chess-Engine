@@ -15,6 +15,22 @@
 #include <future>
 
 /**
+ * @struct MoveScore
+ * @brief Structure to hold a move and its evaluation score
+ * 
+ * Used for parallel move evaluation at the root level to track
+ * which moves have been evaluated and their scores.
+ */
+struct MoveScore {
+    Move move;
+    int score;
+    bool evaluated;
+    
+    MoveScore() : move(), score(-32000), evaluated(false) {}
+    MoveScore(const Move& m) : move(m), score(-32000), evaluated(false) {}
+};
+
+/**
  * @struct SearchStats
  * @brief Statistics collected during chess search operations
  * 
@@ -141,7 +157,7 @@ public:
      * @note This function may take a long time for complex positions.
      *       Consider using the time-limited variant for practical use.
      */
-    Move search_move(Board& board, int max_depth = 10);
+    Move search_move(Board& board, int max_depth);
     
     /**
      * @brief Search for the best move with time limit
@@ -157,7 +173,7 @@ public:
      * 
      * @note Always returns a legal move, even if interrupted early.
      */
-    Move search_move(Board& board, std::chrono::milliseconds time_limit, int max_depth = 50);
+    Move search_move(Board& board, std::chrono::milliseconds time_limit, int max_depth);
     
     /**
      * @brief Search for the best move and return detailed results without time limit
@@ -171,7 +187,7 @@ public:
      * 
      * @note This function may take a long time for complex positions.
      */
-    SearchResult search(Board& board, int max_depth = 10);
+    SearchResult search(Board& board, int max_depth);
     
     /**
      * @brief Search for the best move and return detailed results with time limit
@@ -187,7 +203,7 @@ public:
      * @note This is the most comprehensive search function, recommended for
      *       engine analysis and performance profiling.
      */
-    SearchResult search(Board& board, std::chrono::milliseconds time_limit, int max_depth = 50);
+    SearchResult search(Board& board, std::chrono::milliseconds time_limit, int max_depth);
     
     /**
      * @brief Stop any currently running search operation
@@ -225,6 +241,23 @@ public:
      * @return Current number of threads configured for search
      */
     int get_thread_count() const;
+    
+    /**
+     * @brief Search for the best move using incremental evaluation with optional debug output
+     * 
+     * Performs a chess search using incremental evaluation updates for efficiency.
+     * The incremental evaluation maintains evaluation state across moves to avoid
+     * full re-evaluation at each position.
+     * 
+     * @param board The current board position to search from
+     * @param max_depth Maximum search depth (default: 10)
+     * @param debug_output Enable debug output showing move depth and scores (default: false)
+     * @return Complete search results including move, score, and statistics
+     * 
+     * @note This method uses the Evaluation class's incremental evaluation methods
+     *       for improved performance on deep searches.
+     */
+    SearchResult search_incremental(Board& board, int max_depth, bool debug_output = false);
     
 private:
     // Core search implementation
@@ -327,11 +360,22 @@ private:
     // Context-based search methods for thread safety
     int minimax_with_context(SearchContext& context, int depth, int alpha, int beta, bool maximizing_player, int ply);
     int quiescence_search_with_context(SearchContext& context, int alpha, int beta, bool maximizing_player, int qs_depth = 0);
+    
+    // Incremental evaluation minimax for search_incremental
+    int minimax_incremental(Board& board, int depth, int alpha, int beta, bool maximizing_player, int ply);
     void order_moves_with_context(MoveList& moves, SearchContext& context, int ply, const Move& tt_move = Move());
     int evaluate_move_priority_with_context(const Move& move, const SearchContext& context, int ply, const Move& tt_move);
     
     // Helper functions for search optimizations
     bool has_non_pawn_material(const Board& board, Board::Color color) const;
+    int get_piece_value(char piece) const;
+    
+    // Parallel move evaluation functions
+    void parallel_evaluate_moves(Board& board, std::vector<MoveScore>& move_scores, int depth);
+    void sequential_evaluate_moves(Board& board, std::vector<MoveScore>& move_scores, int depth);
+    void parallel_evaluate_moves_with_aspiration(Board& board, std::vector<MoveScore>& move_scores, int depth, int prev_score);
+    void parallel_evaluate_moves_windowed(Board& board, std::vector<MoveScore>& move_scores, int depth, int alpha, int beta);
+    void sequential_evaluate_moves_windowed(Board& board, std::vector<MoveScore>& move_scores, int depth, int alpha, int beta);
     
     /**
      * @brief Time management worker thread
@@ -356,16 +400,20 @@ private:
     // Old order_moves and evaluate_move_priority declarations removed - using context-based versions instead
     
     // Member variables
-    
     std::unique_ptr<Evaluation> evaluator;  ///< Position evaluation engine
     TranspositionTable transposition_table; ///< Transposition table for caching search results
     
-    // Thread management
+    // Thread management and synchronization
     std::atomic<bool> stop_flag;            ///< Global stop flag for cooperative cancellation
     std::atomic<bool> search_active;        ///< Flag indicating if search is running
+    
+    // Global timer system for strict time enforcement
+    std::atomic<std::chrono::steady_clock::time_point> search_start_time; ///< Global search start time
+    std::atomic<std::chrono::milliseconds> time_limit_ms;                 ///< Global time limit in milliseconds
+    std::atomic<bool> time_limit_active;                                  ///< Flag indicating if time limit is active
     int thread_count;                       ///< Number of threads to use for search
     std::vector<std::thread> worker_threads; ///< Pool of worker threads
-    std::thread time_manager_thread;        ///< Time management thread
+    // Note: time_manager_thread removed - time checking is now integrated into search loops
     
     // Parallel root search components
     std::atomic<bool> thread_pool_active;   ///< Flag indicating if thread pool is running
