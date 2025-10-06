@@ -17,8 +17,9 @@ TranspositionTable::TranspositionTable(size_t size_mb) : current_age(0) {
     // Create index mask for fast modulo operation
     index_mask = table_size - 1;
     
-    // Allocate the table
-    table = std::make_unique<std::atomic<TTEntry>[]>(table_size);
+    // Allocate the table and mutexes
+    table = std::make_unique<TTEntry[]>(table_size);
+    mutexes = std::make_unique<std::mutex[]>(table_size);
     
     // Initialize all entries
     clear();
@@ -27,8 +28,9 @@ TranspositionTable::TranspositionTable(size_t size_mb) : current_age(0) {
 const TTEntry* TranspositionTable::probe(uint64_t key, int depth, int alpha, int beta, int ply) const {
     size_t index = get_index(key);
     
-    // Lockless read - load the entire entry atomically
-    TTEntry entry = table[index].load(std::memory_order_relaxed);
+    // Thread-safe read with mutex
+    std::lock_guard<std::mutex> lock(mutexes[index]);
+    const TTEntry& entry = table[index];
     
     // Check if the entry matches our position
     if (entry.key != key || !entry.is_valid()) {
@@ -44,8 +46,7 @@ const TTEntry* TranspositionTable::probe(uint64_t key, int depth, int alpha, int
     int score = adjust_mate_score_for_retrieval(entry.score, ply);
     
     // Check if the entry can be used based on bound type
-
-    switch (entry.get_type()) {
+    switch (static_cast<TTEntryType>(entry.type)) {
         case TTEntryType::EXACT:
             // Exact score can always be used
             return &entry;
@@ -78,21 +79,23 @@ void TranspositionTable::store(uint64_t key, int depth, int score, TTEntryType t
     TTEntry new_entry(key, static_cast<int16_t>(depth), static_cast<int16_t>(adjusted_score), 
                       type, best_move, current_age);
     
-    // Load existing entry to check replacement policy
-    TTEntry existing = table[index].load(std::memory_order_relaxed);
+    // Thread-safe write with mutex
+    std::lock_guard<std::mutex> lock(mutexes[index]);
+    const TTEntry& existing = table[index];
     
     // Check if we should replace the existing entry
     if (!existing.is_valid() || should_replace(existing, depth, current_age)) {
-        // Store the new entry atomically
-        table[index].store(new_entry, std::memory_order_relaxed);
+        // Store the new entry
+        table[index] = new_entry;
     }
 }
 
 Move TranspositionTable::get_pv_move(uint64_t key) const {
     size_t index = get_index(key);
     
-    // Lockless read
-    TTEntry entry = table[index].load(std::memory_order_relaxed);
+    // Thread-safe read with mutex
+    std::lock_guard<std::mutex> lock(mutexes[index]);
+    const TTEntry& entry = table[index];
 
     // Check if entry matches and has a move
     if (entry.key == key && entry.is_valid() && entry.move != 0) {
@@ -109,8 +112,8 @@ Move TranspositionTable::get_pv_move(uint64_t key) const {
 void TranspositionTable::clear() {
     // Clear all entries
     for (size_t i = 0; i < table_size; ++i) {
-        TTEntry empty_entry;
-        table[i].store(empty_entry, std::memory_order_relaxed);
+        std::lock_guard<std::mutex> lock(mutexes[i]);
+        table[i] = TTEntry();
     }
     current_age = 0;
 }
@@ -122,7 +125,8 @@ size_t TranspositionTable::get_usage() const {
     size_t sample_size = std::min(table_size, static_cast<size_t>(1000));
     
     for (size_t i = 0; i < sample_size; ++i) {
-        TTEntry entry = table[i].load(std::memory_order_relaxed);
+        std::lock_guard<std::mutex> lock(mutexes[i]);
+        const TTEntry& entry = table[i];
         if (entry.is_valid()) {
             used_entries++;
         }

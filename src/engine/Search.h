@@ -371,8 +371,8 @@ private:
     int get_piece_value(char piece) const;
     
     // Parallel move evaluation functions
-    void parallel_evaluate_moves(Board& board, std::vector<MoveScore>& move_scores, int depth);
-    void sequential_evaluate_moves(Board& board, std::vector<MoveScore>& move_scores, int depth);
+    void parallel_evaluate_moves(Board& board, std::vector<MoveScore>& move_scores, int depth, SearchStats* out_stats = nullptr);
+    void sequential_evaluate_moves(Board& board, std::vector<MoveScore>& move_scores, int depth, SearchStats* out_stats = nullptr);
     void parallel_evaluate_moves_with_aspiration(Board& board, std::vector<MoveScore>& move_scores, int depth, int prev_score);
     void parallel_evaluate_moves_windowed(Board& board, std::vector<MoveScore>& move_scores, int depth, int alpha, int beta);
     void sequential_evaluate_moves_windowed(Board& board, std::vector<MoveScore>& move_scores, int depth, int alpha, int beta);

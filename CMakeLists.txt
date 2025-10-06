@@ -33,6 +33,7 @@ add_library(bitboard
     src/board/Board.h
     src/board/MoveGenerator.cpp
     src/board/MoveGenerator.h
+    src/board/SmallVector.h
     src/board/Move.cpp
     src/board/Move.h
     src/board/TranspositionTable.h
@@ -66,7 +67,7 @@ add_executable(test_evaluation
 
 # Create search test executable
 add_executable(test_search
-        src/main/test_search.cpp
+    src/main/test_search.cpp
 )
 
 # Link bitboard library to bitboard test executable

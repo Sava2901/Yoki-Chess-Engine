@@ -25,24 +25,29 @@ enum class TTEntryType : uint8_t {
  * Zobrist key, search depth, evaluation score, bound type, best move,
  * and age for replacement policy.
  */
-struct TTEntry {
+struct alignas(16) TTEntry {
     uint64_t key;        ///< Zobrist hash key for position verification
     int16_t depth;       ///< Search depth when this entry was stored
     int16_t score;       ///< Evaluation score (centipawns or mate score)
     uint8_t type;        ///< Entry type (TTEntryType cast to uint8_t)
     uint32_t move;       ///< Best move (encoded as uint32_t)
     uint8_t age;         ///< Age for replacement policy
+    uint8_t padding[3];  ///< Padding to ensure 16-byte alignment
     
     /**
      * @brief Default constructor - initializes entry as empty
      */
-    TTEntry() : key(0), depth(-1), score(0), type(static_cast<uint8_t>(TTEntryType::EXACT)), move(0), age(0) {}
+    TTEntry() : key(0), depth(-1), score(0), type(static_cast<uint8_t>(TTEntryType::EXACT)), move(0), age(0) {
+        padding[0] = padding[1] = padding[2] = 0;
+    }
     
     /**
      * @brief Constructor with all parameters
      */
     TTEntry(uint64_t k, int16_t d, int16_t s, TTEntryType t, uint32_t m, uint8_t a)
-        : key(k), depth(d), score(s), type(static_cast<uint8_t>(t)), move(m), age(a) {}
+        : key(k), depth(d), score(s), type(static_cast<uint8_t>(t)), move(m), age(a) {
+        padding[0] = padding[1] = padding[2] = 0;
+    }
     
     /**
      * @brief Check if this entry is valid (has been initialized)
@@ -126,7 +131,8 @@ public:
     size_t get_usage() const;
     
 private:
-    std::unique_ptr<std::atomic<TTEntry>[]> table;  ///< The hash table
+    std::unique_ptr<TTEntry[]> table;  ///< The hash table
+    std::unique_ptr<std::mutex[]> mutexes;  ///< Mutexes for thread safety
     size_t table_size;                              ///< Size of the table (power of 2)
     size_t index_mask;                              ///< Mask for fast indexing (size - 1)
     uint8_t current_age;                            ///< Current age counter

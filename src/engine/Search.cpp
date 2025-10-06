@@ -258,8 +258,12 @@ int Search::quiescence_search_with_context(SearchContext& context, int alpha, in
 // Iterative deepening search
 void Search::iterative_deepening(Board& board, int max_depth, SearchResult& result) {
     SearchContext context(board);
-    Move best_move;
-    bool found_move = false;
+    Move fallback_move;
+    Move best_evaluated_move; // Track the best move that was actually evaluated
+    bool has_fallback_move = false;
+    bool has_evaluated_move = false;
+    int best_evaluated_score = -INFINITY_SCORE;
+    int best_completed_depth = 0;
     
     // Generate legal moves
     MoveList legal_moves = context.move_generator.generate_legal_moves(context.board);
@@ -268,8 +272,8 @@ void Search::iterative_deepening(Board& board, int max_depth, SearchResult& resu
     }
     
     // Use first legal move as fallback
-    best_move = legal_moves[0];
-    found_move = true;
+    fallback_move = legal_moves[0];
+    has_fallback_move = true;
     
     // Initialize move scores
     std::vector<MoveScore> move_scores;
@@ -277,6 +281,9 @@ void Search::iterative_deepening(Board& board, int max_depth, SearchResult& resu
     for (const Move& move : legal_moves) {
         move_scores.emplace_back(move);
     }
+    
+    // Initialize combined statistics
+    SearchStats combined_stats;
     
     // Iterative deepening loop
     for (int depth = 1; depth <= max_depth && !should_stop(); depth++) {
@@ -286,15 +293,25 @@ void Search::iterative_deepening(Board& board, int max_depth, SearchResult& resu
             ms.score = -INFINITY_SCORE;
         }
         
+        // Clear stats for this depth
+        context.stats.clear();
+        
         // Parallelize move evaluation at root
-        parallel_evaluate_moves(context.board, move_scores, depth);
+        SearchStats depth_stats;
+        parallel_evaluate_moves(context.board, move_scores, depth, &depth_stats);
         
-        // Check if search was stopped
-        if (should_stop()) {
-            break;
-        }
+        // Accumulate statistics from this depth
+        combined_stats.nodes_searched += depth_stats.nodes_searched;
+        combined_stats.quiescence_nodes += depth_stats.quiescence_nodes;
+        combined_stats.tt_hits += depth_stats.tt_hits;
+        combined_stats.beta_cutoffs += depth_stats.beta_cutoffs;
+        combined_stats.null_move_cutoffs += depth_stats.null_move_cutoffs;
+        combined_stats.lmr_reductions += depth_stats.lmr_reductions;
         
-        // Find best move from evaluated moves
+        // Check if search was stopped during evaluation
+        bool depth_completed = !should_stop();
+        
+        // Find best move from evaluated moves at this depth
         auto best_it = std::max_element(move_scores.begin(), move_scores.end(),
             [](const MoveScore& a, const MoveScore& b) {
                 if (!a.evaluated) return true;
@@ -302,31 +319,50 @@ void Search::iterative_deepening(Board& board, int max_depth, SearchResult& resu
                 return a.score < b.score;
             });
         
+        // If we have at least one evaluated move at this depth
         if (best_it != move_scores.end() && best_it->evaluated) {
-            best_move = best_it->move;
-            result.best_move = best_move;
-            result.score = best_it->score;
-            result.depth = depth;
-            found_move = true;
-            
-            // Sort moves for next iteration (best move first)
-            std::sort(move_scores.begin(), move_scores.end(),
-                [](const MoveScore& a, const MoveScore& b) {
-                    if (!a.evaluated && !b.evaluated) return false;
-                    if (!a.evaluated) return false;
-                    if (!b.evaluated) return true;
-                    return a.score > b.score;
-                });
+            // If this depth completed successfully, update our best result
+            if (depth_completed) {
+                best_evaluated_move = best_it->move;
+                best_evaluated_score = best_it->score;
+                best_completed_depth = depth;
+                has_evaluated_move = true;
+                
+                // Update result with completed depth
+                result.best_move = best_evaluated_move;
+                result.score = best_evaluated_score;
+                result.depth = depth;
+                
+                // Sort moves for next iteration (best move first)
+                std::sort(move_scores.begin(), move_scores.end(),
+                    [](const MoveScore& a, const MoveScore& b) {
+                        if (!a.evaluated && !b.evaluated) return false;
+                        if (!a.evaluated) return false;
+                        if (!b.evaluated) return true;
+                        return a.score > b.score;
+                    });
+            }
+            // If depth was interrupted but we have some evaluated moves,
+            // we keep the previous best result and don't update it
+        }
+        
+        // If search was stopped, break out of the loop
+        if (should_stop()) {
+            break;
         }
     }
     
-    // Ensure we return a valid move
-    if (found_move) {
-        result.best_move = best_move;
+    // Final move selection logic:
+    // 1. If we have a completed evaluated move, use it (already set in result)
+    // 2. If we don't have any evaluated moves, fall back to first legal move
+    if (!has_evaluated_move && has_fallback_move) {
+        result.best_move = fallback_move;
+        result.score = 0; // Unknown score
+        result.depth = 0; // No depth completed
     }
     
-    // Copy statistics
-    result.stats = context.stats;
+    // Copy accumulated statistics
+    result.stats = combined_stats;
 }
 
 // Move ordering with context
@@ -390,6 +426,8 @@ bool Search::has_non_pawn_material(const Board& board, Board::Color color) const
 }
 
 // MAIN SEARCH FUNCTIONS - THE 4 REQUIRED FUNCTIONS
+
+//TODO: Singlethread often returns different moves than multithread at the same exact depth - investigate why
 
 // 1. Search move without time limit
 Move Search::search_move(Board& board, int max_depth) {
@@ -532,59 +570,25 @@ SearchResult Search::search(Board& board, std::chrono::milliseconds time_limit, 
     return result;
 }
 
-// Placeholder implementations for other declared functions
-
-SearchResult Search::search_worker(Board& board, const MoveList& moves, int start_idx, int end_idx, int depth) {
-    SearchResult result;
-    // Placeholder implementation
-    return result;
-}
-
-SearchResult Search::search_worker_with_window(Board& board, const MoveList& moves, int start_idx, int end_idx, int depth, int alpha, int beta) {
-    SearchResult result;
-    // Placeholder implementation
-    return result;
-}
-
-SearchResult Search::parallel_root_worker(SearchContext& context, const MoveList& moves, int start_idx, int end_idx, int depth) {
-    SearchResult result;
-    // Placeholder implementation
-    return result;
-}
-
-SearchResult Search::parallel_root_search(Board& board, const MoveList& moves, int depth) {
-    SearchResult result;
-    // Placeholder implementation
-    return result;
-}
-
-SearchResult Search::parallel_root_search_with_window(Board& board, const MoveList& moves, int depth, int alpha, int beta) {
-    SearchResult result;
-    // Placeholder implementation
-    return result;
-}
-
-int Search::minimax_incremental(Board& board, int depth, int alpha, int beta, bool maximizing_player, int ply) {
-    // Placeholder implementation
-    return 0;
-}
-
 // New function: Parallel move evaluation at root
-void Search::parallel_evaluate_moves(Board& board, std::vector<MoveScore>& move_scores, int depth) {
+void Search::parallel_evaluate_moves(Board& board, std::vector<MoveScore>& move_scores, int depth, SearchStats* out_stats) {
     const int num_moves = static_cast<int>(move_scores.size());
     const int num_threads = std::min(thread_count, num_moves);
     
     if (num_threads <= 1 || num_moves == 1) {
         // Single-threaded fallback
-        sequential_evaluate_moves(board, move_scores, depth);
+        sequential_evaluate_moves(board, move_scores, depth, out_stats);
         return;
     }
     
-    // Shared mutex for accessing move_scores
+    // Shared mutex for accessing move_scores and accumulating stats
     std::mutex scores_mutex;
     
     // Atomic counter for work distribution
     std::atomic<int> next_move_index(0);
+    
+    // Shared statistics accumulator
+    SearchStats combined_stats;
     
     // Launch worker threads
     std::vector<std::thread> threads;
@@ -606,6 +610,9 @@ void Search::parallel_evaluate_moves(Board& board, std::vector<MoveScore>& move_
                 
                 const Move& move = move_scores[move_idx].move;
                 
+                // Reset thread stats for this move
+                thread_context.stats.clear();
+                
                 // Make move
                 BitboardMoveUndoData undo_data = thread_board.make_move(move);
                 
@@ -622,6 +629,14 @@ void Search::parallel_evaluate_moves(Board& board, std::vector<MoveScore>& move_
                     std::lock_guard<std::mutex> lock(scores_mutex);
                     move_scores[move_idx].score = score;
                     move_scores[move_idx].evaluated = true;
+                    
+                    // Accumulate thread statistics
+                    combined_stats.nodes_searched += thread_context.stats.nodes_searched;
+                    combined_stats.quiescence_nodes += thread_context.stats.quiescence_nodes;
+                    combined_stats.tt_hits += thread_context.stats.tt_hits;
+                    combined_stats.beta_cutoffs += thread_context.stats.beta_cutoffs;
+                    combined_stats.null_move_cutoffs += thread_context.stats.null_move_cutoffs;
+                    combined_stats.lmr_reductions += thread_context.stats.lmr_reductions;
                 }
             }
         });
@@ -633,11 +648,17 @@ void Search::parallel_evaluate_moves(Board& board, std::vector<MoveScore>& move_
             thread.join();
         }
     }
+    
+    // Return accumulated statistics if requested
+    if (out_stats) {
+        *out_stats = combined_stats;
+    }
 }
 
 // Sequential fallback for single-threaded evaluation
-void Search::sequential_evaluate_moves(Board& board, std::vector<MoveScore>& move_scores, int depth) {
+void Search::sequential_evaluate_moves(Board& board, std::vector<MoveScore>& move_scores, int depth, SearchStats* out_stats) {
     SearchContext context(board);
+    SearchStats accumulated_stats;
     
     for (auto& ms : move_scores) {
         if (should_stop()) {
@@ -645,6 +666,9 @@ void Search::sequential_evaluate_moves(Board& board, std::vector<MoveScore>& mov
         }
         
         const Move& move = ms.move;
+        
+        // Reset stats for this move
+        context.stats.clear();
         
         // Make move
         BitboardMoveUndoData undo_data = context.board.make_move(move);
@@ -660,6 +684,19 @@ void Search::sequential_evaluate_moves(Board& board, std::vector<MoveScore>& mov
         // Store result
         ms.score = score;
         ms.evaluated = true;
+        
+        // Accumulate statistics
+        accumulated_stats.nodes_searched += context.stats.nodes_searched;
+        accumulated_stats.quiescence_nodes += context.stats.quiescence_nodes;
+        accumulated_stats.tt_hits += context.stats.tt_hits;
+        accumulated_stats.beta_cutoffs += context.stats.beta_cutoffs;
+        accumulated_stats.null_move_cutoffs += context.stats.null_move_cutoffs;
+        accumulated_stats.lmr_reductions += context.stats.lmr_reductions;
+    }
+    
+    // Return accumulated statistics if requested
+    if (out_stats) {
+        *out_stats = accumulated_stats;
     }
 }
 
@@ -689,7 +726,8 @@ void Search::parallel_evaluate_moves_with_aspiration(Board& board,
         for (auto& ms : move_scores) {
             ms.evaluated = false;
         }
-        parallel_evaluate_moves(board, move_scores, depth);
+        SearchStats depth_stats;
+        parallel_evaluate_moves(board, move_scores, depth, &depth_stats);
     }
 }
 
