@@ -242,26 +242,7 @@ public:
      */
     int get_thread_count() const;
     
-    /**
-     * @brief Search for the best move using incremental evaluation with optional debug output
-     * 
-     * Performs a chess search using incremental evaluation updates for efficiency.
-     * The incremental evaluation maintains evaluation state across moves to avoid
-     * full re-evaluation at each position.
-     * 
-     * @param board The current board position to search from
-     * @param max_depth Maximum search depth (default: 10)
-     * @param debug_output Enable debug output showing move depth and scores (default: false)
-     * @return Complete search results including move, score, and statistics
-     * 
-     * @note This method uses the Evaluation class's incremental evaluation methods
-     *       for improved performance on deep searches.
-     */
-    SearchResult search_incremental(Board& board, int max_depth, bool debug_output = false);
-    
 private:
-    // Core search implementation
-    
     /**
      * @brief Main iterative deepening search loop
      * 
@@ -273,74 +254,6 @@ private:
      * @param result Reference to store search results
      */
     void iterative_deepening(Board& board, int max_depth, SearchResult& result);
-    
-    // Old minimax declaration removed - using minimax_with_context instead
-    
-    // Old quiescence_search declaration removed - using quiescence_search_with_context instead
-    
-    /**
-     * @brief Worker thread function for parallel search
-     * 
-     * Each worker thread runs this function to search a portion of the
-     * move tree in parallel with other threads.
-     * 
-     * @param board Reference to the board position to search
-     * @param moves List of moves to search
-     * @param start_idx Starting index in the move list
-     * @param end_idx Ending index in the move list
-     * @param depth Search depth for this worker
-     * @return SearchResult with best move and score found
-     */
-    SearchResult search_worker(Board& board, const MoveList& moves, int start_idx, int end_idx, int depth);
-    
-    /**
-     * @brief Worker thread function for parallel search with aspiration window and PVS
-     * 
-     * Each worker thread runs this function to search a portion of the move tree
-     * using Principal Variation Search with aspiration windows for better pruning.
-     * 
-     * @param board Reference to the board position to search
-     * @param moves List of moves to search
-     * @param start_idx Starting index in the move list
-     * @param end_idx Ending index in the move list
-     * @param depth Search depth for this worker
-     * @param alpha Alpha bound for aspiration window
-     * @param beta Beta bound for aspiration window
-     * @return SearchResult with best move and score found
-     */
-    SearchResult search_worker_with_window(Board& board, const MoveList& moves, int start_idx, int end_idx, int depth, int alpha, int beta);
-    
-    /**
-     * @brief Parallel root search worker function
-     * 
-     * Each thread runs this function to search a subset of root moves
-     * with its own SearchContext to avoid contention.
-     * 
-     * @param context Per-thread search context with board copy and local data
-     * @param moves List of moves to search
-     * @param start_idx Starting index in the move list for this thread
-     * @param end_idx Ending index in the move list for this thread
-     * @param depth Search depth
-     * @return SearchResult with best move and score found by this thread
-     */
-    SearchResult parallel_root_worker(SearchContext& context, const MoveList& moves, int start_idx, int end_idx, int depth);
-    
-    SearchResult parallel_root_search(Board& board, const MoveList& moves, int depth);
-    
-    /**
-     * @brief Parallel root search with aspiration window and PVS
-     * 
-     * Performs parallel search of root moves using aspiration windows and
-     * Principal Variation Search for improved pruning efficiency.
-     * 
-     * @param board The board position to search
-     * @param moves List of moves to search
-     * @param depth Search depth
-     * @param alpha Alpha bound for aspiration window
-     * @param beta Beta bound for aspiration window
-     * @return SearchResult with best move and score found
-     */
-    SearchResult parallel_root_search_with_window(Board& board, const MoveList& moves, int depth, int alpha, int beta);
     
     /**
      * @brief Initialize the persistent thread pool
@@ -362,12 +275,10 @@ private:
     int quiescence_search_with_context(SearchContext& context, int alpha, int beta, bool maximizing_player, int qs_depth = 0);
     
     // Incremental evaluation minimax for search_incremental
-    int minimax_incremental(Board& board, int depth, int alpha, int beta, bool maximizing_player, int ply);
     void order_moves_with_context(MoveList& moves, SearchContext& context, int ply, const Move& tt_move = Move());
     int evaluate_move_priority_with_context(const Move& move, const SearchContext& context, int ply, const Move& tt_move);
     
     // Helper functions for search optimizations
-    bool has_non_pawn_material(const Board& board, Board::Color color) const;
     int get_piece_value(char piece) const;
     
     // Parallel move evaluation functions
@@ -397,11 +308,9 @@ private:
      */
     bool should_stop() const;
     
-    // Old order_moves and evaluate_move_priority declarations removed - using context-based versions instead
-    
     // Member variables
     std::unique_ptr<Evaluation> evaluator;  ///< Position evaluation engine
-    TranspositionTable transposition_table; ///< Transposition table for caching search results
+    TranspositionTable* transposition_table; ///< Transposition table for caching search results
     
     // Thread management and synchronization
     std::atomic<bool> stop_flag;            ///< Global stop flag for cooperative cancellation

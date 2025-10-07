@@ -592,6 +592,17 @@ private:
      * @return Bitboard with bits set for each piece that attacks the target square
      */
     [[nodiscard]] Bitboard get_attackers_to_square(int square, Color attacking_color) const;
+    
+    /**
+     * @brief Test hash sanity by verifying make/unmake produces identical hashes
+     * 
+     * This debugging function tests all legal moves to ensure that:
+     * 1. Making a move and then unmaking it results in the same hash
+     * 2. The Zobrist hash implementation is consistent
+     * 
+     * Prints results to stdout for debugging transposition table issues.
+     */
+    void test_hash_sanity() const;
 };
 
 /**

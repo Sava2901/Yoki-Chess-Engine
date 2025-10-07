@@ -824,3 +824,45 @@ void Board::update_zobrist_hash(const Move& move, uint8_t old_castling_rights, i
     // Update side to move (always flip)
     zobrist_hash ^= zobrist_side_to_move;
 }
+
+void Board::test_hash_sanity() const {
+    std::cout << "=== Hash Sanity Test ===" << std::endl;
+    
+    // Create a mutable copy for testing
+    Board test_board = *this;
+    uint64_t initial_hash = test_board.get_zobrist_hash();
+    
+    std::cout << "Initial hash: " << std::hex << initial_hash << std::dec << std::endl;
+    
+    // Generate all legal moves
+    MoveGenerator generator;
+    MoveList legal_moves = generator.generate_legal_moves(test_board);
+    
+    int tested_moves = 0;
+    int hash_mismatches = 0;
+    
+    for (const Move& move : legal_moves) {
+        // Make the move
+        BitboardMoveUndoData undo_data = test_board.apply_move(move);
+        
+        // Unmake the move
+        test_board.undo_move(undo_data);
+        
+        // Check if hash matches
+        uint64_t final_hash = test_board.get_zobrist_hash();
+        
+        if (initial_hash != final_hash) {
+            hash_mismatches++;
+            std::cout << "HASH MISMATCH for move " << move.to_algebraic() 
+                      << ": initial=" << std::hex << initial_hash 
+                      << " final=" << final_hash << std::dec << std::endl;
+        }
+        
+        tested_moves++;
+        if (tested_moves >= 10) break; // Limit output for readability
+    }
+    
+    std::cout << "Tested " << tested_moves << " moves, found " 
+              << hash_mismatches << " hash mismatches" << std::endl;
+    std::cout << "========================" << std::endl;
+}

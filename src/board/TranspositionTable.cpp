@@ -1,184 +1,399 @@
 #include "TranspositionTable.h"
+#include "Board.h"
 #include <algorithm>
 #include <cstring>
+#include <iostream>
+#include <thread>
+#include <atomic>
+#include <mutex>
 
-static constexpr int MATE_BOUND = 29000;
+// Platform-specific includes for memory alignment and prefetch
+#ifdef _WIN32
+#include <windows.h>
+#include <malloc.h>
+#include <intrin.h>
+#else
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
-TranspositionTable::TranspositionTable(size_t size_mb) : current_age(0) {
-    // Calculate number of entries (each TTEntry is about 16 bytes)
-    size_t target_entries = (size_mb * 1024 * 1024) / sizeof(TTEntry);
-    
-    // Round down to nearest power of 2
-    table_size = 1;
-    while (table_size <= target_entries / 2) {
-        table_size <<= 1;
+// Constants for mate score handling
+constexpr int MATE_SCORE = 32000;
+constexpr int MATE_BOUND = MATE_SCORE - 1000;
+
+// Constructor
+TranspositionTable::TranspositionTable(size_t size_mb) 
+    : table_(nullptr), 
+      size_mb_(0), 
+      bucket_count_(0),
+      age_(0),
+      replacement_strategy_(TTReplacementStrategy::DEPTH_PREFERRED) {
+    resize(size_mb);
+}
+
+// Destructor
+TranspositionTable::~TranspositionTable() {
+    if (table_) {
+        deallocate_memory();
+    }
+}
+
+// Resize the transposition table
+bool TranspositionTable::resize(size_t size_mb) {
+    // Validate size (must be power of 2 and within reasonable bounds)
+    if (size_mb < 1 || size_mb > 32768) {
+        return false;
     }
     
-    // Create index mask for fast modulo operation
-    index_mask = table_size - 1;
+    // Round to nearest power of 2
+    size_t target_size = 1;
+    while (target_size < size_mb) {
+        target_size <<= 1;
+    }
+    if (target_size > size_mb * 2) {
+        target_size >>= 1;
+    }
     
-    // Allocate the table and mutexes
-    table = std::make_unique<TTEntry[]>(table_size);
-    mutexes = std::make_unique<std::mutex[]>(table_size);
+    // Calculate bucket count
+    size_t total_bytes = target_size * 1024 * 1024;
+    size_t new_bucket_count = total_bytes / sizeof(TTBucket);
     
-    // Initialize all entries
+    // Ensure bucket count is power of 2 for efficient modulo
+    size_t bucket_power = 1;
+    while (bucket_power < new_bucket_count) {
+        bucket_power <<= 1;
+    }
+    if (bucket_power > new_bucket_count * 2) {
+        bucket_power >>= 1;
+    }
+    new_bucket_count = bucket_power;
+    
+    // Deallocate old memory
+    if (table_) {
+        deallocate_memory();
+    }
+    
+    // Allocate new memory
+    if (!allocate_memory(new_bucket_count)) {
+        return false;
+    }
+    
+    size_mb_ = target_size;
+    bucket_count_ = new_bucket_count;
+    
+    // Clear the table
     clear();
+    
+    return true;
 }
 
-const TTEntry* TranspositionTable::probe(uint64_t key, int depth, int alpha, int beta, int ply) const {
-    size_t index = get_index(key);
-    
-    // Thread-safe read with mutex
-    std::lock_guard<std::mutex> lock(mutexes[index]);
-    const TTEntry& entry = table[index];
-    
-    // Check if the entry matches our position
-    if (entry.key != key || !entry.is_valid()) {
-        return nullptr;
-    }
-    
-    // Check if the entry has sufficient depth
-    if (entry.depth < depth) {
-        return nullptr;
-    }
-    
-    // Adjust mate scores from storage format
-    int score = adjust_mate_score_for_retrieval(entry.score, ply);
-    
-    // Check if the entry can be used based on bound type
-    switch (static_cast<TTEntryType>(entry.type)) {
-        case TTEntryType::EXACT:
-            // Exact score can always be used
-            return &entry;
-            
-        case TTEntryType::LOWER_BOUND:
-            // Lower bound (beta cutoff) - can use if score >= beta
-            if (score >= beta) {
-                return &entry;
-            }
-            break;
-            
-        case TTEntryType::UPPER_BOUND:
-            // Upper bound (alpha cutoff) - can use if score <= alpha
-            if (score <= alpha) {
-                return &entry;
-            }
-            break;
-    }
-    
-    return nullptr;
-}
-
-void TranspositionTable::store(uint64_t key, int depth, int score, TTEntryType type, uint32_t best_move, int ply) {
-    size_t index = get_index(key);
-    
-    // Adjust mate scores for storage
-    int adjusted_score = adjust_mate_score_for_storage(score, ply);
-    
-    // Create new entry
-    TTEntry new_entry(key, static_cast<int16_t>(depth), static_cast<int16_t>(adjusted_score), 
-                      type, best_move, current_age);
-    
-    // Thread-safe write with mutex
-    std::lock_guard<std::mutex> lock(mutexes[index]);
-    const TTEntry& existing = table[index];
-    
-    // Check if we should replace the existing entry
-    if (!existing.is_valid() || should_replace(existing, depth, current_age)) {
-        // Store the new entry
-        table[index] = new_entry;
-    }
-}
-
-Move TranspositionTable::get_pv_move(uint64_t key) const {
-    size_t index = get_index(key);
-    
-    // Thread-safe read with mutex
-    std::lock_guard<std::mutex> lock(mutexes[index]);
-    const TTEntry& entry = table[index];
-
-    // Check if entry matches and has a move
-    if (entry.key == key && entry.is_valid() && entry.move != 0) {
-        // Convert uint32_t back to Move
-        Move move;
-        move.from_uint32(entry.move);
-        return move;
-    }
-    
-    // Return invalid move if not found
-    return {};
-}
-
+// Clear the transposition table
 void TranspositionTable::clear() {
-    // Clear all entries
-    for (size_t i = 0; i < table_size; ++i) {
-        std::lock_guard<std::mutex> lock(mutexes[i]);
-        table[i] = TTEntry();
+    if (table_) {
+        std::memset(table_.get(), 0, bucket_count_ * sizeof(TTBucket));
+        
+        // Reset statistics
+        stats_.probes = 0;
+        stats_.hits = 0;
+        stats_.cutoffs = 0;
+        stats_.collisions = 0;
+        stats_.fill_rate = 0.0;
+        stats_.hit_rate = 0.0;
     }
-    current_age = 0;
 }
 
-size_t TranspositionTable::get_usage() const {
-    size_t used_entries = 0;
+// Probe the transposition table
+TTResult TranspositionTable::probe(uint64_t zobrist_key, int depth, int alpha, int beta, int ply) {
+    std::shared_lock<std::shared_mutex> lock(table_mutex_);
     
-    // Sample a portion of the table to estimate usage
-    size_t sample_size = std::min(table_size, static_cast<size_t>(1000));
+    if (!table_) {
+        stats_.probes++;
+        return TTResult{};
+    }
     
-    for (size_t i = 0; i < sample_size; ++i) {
-        std::lock_guard<std::mutex> lock(mutexes[i]);
-        const TTEntry& entry = table[i];
-        if (entry.is_valid()) {
-            used_entries++;
+    stats_.probes++;
+    size_t bucket_index = get_bucket_index(zobrist_key);
+    TTBucket& bucket = table_[bucket_index];
+
+    // Search through all entries in the bucket
+    for (int i = 0; i < 4; ++i) {
+        TTEntry& entry = bucket.entries[i];
+        
+        // Check if this entry matches our position
+        if (entry.key == zobrist_key) {
+            // Update age to mark as recently accessed
+            entry.set_age(age_);
+            
+            // Adjust mate scores by ply distance
+            int adjusted_score = adjust_mate_score_from_tt(entry.score, ply);
+            
+            TTResult result;
+            result.found = true;
+            result.move.from_uint32(entry.move);
+            result.score = adjusted_score;
+            result.depth = entry.depth;
+            result.bound_type = entry.get_bound_type();
+            result.age = entry.get_age();
+            
+            stats_.hits++;
+            
+            // Check if we can use this entry for a cutoff
+            if (entry.depth >= depth) {
+                if (entry.get_bound_type() == TTBoundType::EXACT ||
+                    (entry.get_bound_type() == TTBoundType::LOWER_BOUND && adjusted_score >= beta) ||
+                    (entry.get_bound_type() == TTBoundType::UPPER_BOUND && adjusted_score <= alpha)) {
+                    result.can_cutoff = true;
+                    stats_.cutoffs++;
+                } else {
+                }
+            } else {
+            }
+            
+            return result;
         }
     }
     
-    // Extrapolate to full table
-    return (used_entries * table_size) / sample_size;
+    return TTResult{};
 }
 
-int TranspositionTable::adjust_mate_score_for_storage(int score, int ply) const {
+// Store an entry in the transposition table
+void TranspositionTable::store(uint64_t zobrist_key, const Move& best_move, int score, 
+                              int depth, int ply, TTBoundType bound_type) {
+    std::unique_lock<std::shared_mutex> lock(table_mutex_);
+    
+    if (!table_) {
+        return;
+    }
+    
+    size_t bucket_index = get_bucket_index(zobrist_key);
+    TTBucket& bucket = table_[bucket_index];
+    
+    // Adjust mate scores for storage
+    int adjusted_score = adjust_mate_score_to_tt(score, ply);
+    
+    // Look for existing entry or find replacement candidate
+    int replace_index = -1;
+    
+    // First, check if we already have this position
+    for (int i = 0; i < 4; ++i) {
+        if (bucket.entries[i].key == zobrist_key) {
+            replace_index = i;
+            break;
+        }
+    }
+    
+    // If not found, find the best replacement candidate using improved policy
+    if (replace_index == -1) {
+        // Look for empty slot first
+        for (int i = 0; i < 4; ++i) {
+            if (bucket.entries[i].key == 0) {
+                replace_index = i;
+                break;
+            }
+        }
+        
+        // If no empty slot, apply improved replacement policy:
+        // Only overwrite if different key AND new search is deeper
+        if (replace_index == -1) {
+            for (int i = 0; i < 4; ++i) {
+                TTEntry& entry = bucket.entries[i];
+                if (entry.key != zobrist_key && depth > entry.depth) {
+                    replace_index = i;
+                    break;
+                }
+            }
+            
+            // If still no candidate found, use the old replacement strategy as fallback
+            if (replace_index == -1) {
+                replace_index = find_replacement_index(bucket, depth);
+            }
+        }
+        
+        if (replace_index != -1 && bucket.entries[replace_index].key != 0) {
+            stats_.collisions++;
+        }
+    }
+    
+    // Store the entry
+    if (replace_index != -1) {
+        TTEntry& entry = bucket.entries[replace_index];
+        entry.key = zobrist_key;
+        entry.move = best_move.to_uint32();
+        entry.score = static_cast<int16_t>(std::clamp(adjusted_score, -32767, 32767));
+        entry.depth = static_cast<uint8_t>(std::clamp(depth, 0, 255));
+        entry.set_bound_type(bound_type);
+        entry.set_age(age_);
+    }
+}
+
+// Prefetch a bucket for the given hash
+void TranspositionTable::prefetch(uint64_t zobrist_key) {
+    if (!table_) {
+        return;
+    }
+    
+    size_t bucket_index = get_bucket_index(zobrist_key);
+    
+#ifdef __builtin_prefetch
+    __builtin_prefetch(&table_[bucket_index], 0, 3);
+#elif defined(_MSC_VER)
+    _mm_prefetch(reinterpret_cast<const char*>(&table_[bucket_index]), _MM_HINT_T0);
+#else
+    (void)bucket_index; // Suppress unused variable warning
+#endif
+}
+
+// Advance the search age
+void TranspositionTable::new_search() {
+    age_ = (age_ + 1) & 0xFF; // Keep age in 8-bit range
+}
+
+// Get hash full (permille)
+int TranspositionTable::get_hashfull() const {
+    if (!table_ || bucket_count_ == 0) {
+        return 0;
+    }
+    
+    // Sample a portion of the table to estimate fullness
+    const size_t sample_size = std::min(bucket_count_, size_t(1000));
+    size_t filled_entries = 0;
+    size_t total_entries = 0;
+    
+    for (size_t i = 0; i < sample_size; ++i) {
+        const TTBucket& bucket = table_[i];
+        for (int j = 0; j < 4; ++j) {
+            total_entries++;
+            if (bucket.entries[j].key != 0) {
+                filled_entries++;
+            }
+        }
+    }
+    
+    if (total_entries == 0) {
+        return 0;
+    }
+    
+    return static_cast<int>((filled_entries * 1000) / total_entries);
+}
+
+// Get current statistics
+TTStats TranspositionTable::get_statistics() const {
+    TTStats stats = stats_;
+
+    // Calculate derived statistics
+    if (stats.probes > 0) {
+        stats.hit_rate = static_cast<double>(stats.hits) / stats.probes;
+    }
+    
+    if (bucket_count_ > 0) {
+        stats.fill_rate = static_cast<double>(get_hashfull()) / 1000.0;
+    }
+    
+    return stats;
+}
+
+// Reset statistics
+void TranspositionTable::reset_stats() {
+    stats_.probes = 0;
+    stats_.hits = 0;
+    stats_.cutoffs = 0;
+    stats_.collisions = 0;
+    stats_.fill_rate = 0.0;
+    stats_.hit_rate = 0.0;
+}
+
+// Set replacement strategy
+void TranspositionTable::set_replacement_strategy(TTReplacementStrategy strategy) {
+    replacement_strategy_ = strategy;
+}
+
+// Get current size in MB
+size_t TranspositionTable::get_size_mb() const {
+    return size_mb_;
+}
+
+// Get bucket count
+size_t TranspositionTable::get_bucket_count() const {
+    return bucket_count_;
+}
+
+// Private helper methods
+
+size_t TranspositionTable::get_bucket_index(uint64_t zobrist_key) const {
+    return zobrist_key & (bucket_count_ - 1);
+}
+
+int TranspositionTable::find_replacement_index(const TTBucket& bucket, int /* depth */) {
+    int best_index = 0;
+    int best_score = INT_MAX;
+    
+    for (int i = 0; i < 4; ++i) {
+        const TTEntry& entry = bucket.entries[i];
+        
+        // Empty slot has highest priority
+        if (entry.key == 0) {
+            return i;
+        }
+        
+        int score = 0;
+        
+        switch (replacement_strategy_) {
+            case TTReplacementStrategy::DEPTH_PREFERRED:
+                // Prefer replacing entries with lower depth
+                score = entry.depth * 256 + (255 - entry.get_age());
+                break;
+                
+            case TTReplacementStrategy::AGE_PREFERRED:
+                // Prefer replacing older entries
+                score = (255 - entry.get_age()) * 256 + entry.depth;
+                break;
+                
+            case TTReplacementStrategy::HYBRID:
+                // Balanced approach considering both depth and age
+                score = entry.depth * 128 + (255 - entry.get_age()) * 128;
+                break;
+        }
+        
+        if (score < best_score) {
+            best_score = score;
+            best_index = i;
+        }
+    }
+    
+    return best_index;
+}
+
+int TranspositionTable::adjust_mate_score_to_tt(int score, int ply) {
     if (score > MATE_BOUND) {
-        // Mate in X moves - adjust to be relative to current position
         return score + ply;
     } else if (score < -MATE_BOUND) {
-        // Mated in X moves - adjust to be relative to current position
         return score - ply;
     }
     return score;
 }
 
-int TranspositionTable::adjust_mate_score_for_retrieval(int score, int ply) const {
+int TranspositionTable::adjust_mate_score_from_tt(int score, int ply) {
     if (score > MATE_BOUND) {
-        // Mate in X moves - adjust back to be relative to root
         return score - ply;
     } else if (score < -MATE_BOUND) {
-        // Mated in X moves - adjust back to be relative to root
         return score + ply;
     }
     return score;
 }
 
-bool TranspositionTable::should_replace(const TTEntry& existing, int new_depth, uint8_t new_age) const {
-    // Always replace if existing entry is invalid
-    if (!existing.is_valid()) {
+bool TranspositionTable::allocate_memory(size_t bucket_count) {
+    try {
+        table_ = std::make_unique<TTBucket[]>(bucket_count);
         return true;
+    } catch (const std::bad_alloc&) {
+        table_.reset();
+        return false;
     }
-    
-    // Replace if new entry has greater depth
-    if (new_depth > existing.depth) {
-        return true;
-    }
-    
-    // Replace if same depth but newer age
-    if (new_depth == existing.depth && new_age != existing.age) {
-        return true;
-    }
-    
-    // Replace if existing entry is significantly older (age wraps around)
-    uint8_t age_diff = (new_age - existing.age) & 0xFF;
-    if (age_diff < 128 && age_diff > 4) {  // Existing entry is 4+ searches old
-        return true;
-    }
-    
-    return false;
 }
+
+void TranspositionTable::deallocate_memory() {
+    table_.reset();
+}
+
+// Global transposition table instance
+TranspositionTable g_transposition_table(128); // Default 128MB (1 << 23 entries)

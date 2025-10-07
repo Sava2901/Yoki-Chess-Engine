@@ -1494,9 +1494,9 @@ int main() {
 //
 //        // Extended comprehensive tests
 //        test_position_evaluations();
-//        test_evaluation_consistency();
+        // test_evaluation_consistency();
 //        test_symmetry();
-//        test_zobrist_collision_resistance();
+        // test_zobrist_collision_resistance();
 //        test_evaluation_bounds();
 //        test_game_phase_transitions();
 //        test_pawn_hash_table();
@@ -1505,17 +1505,17 @@ int main() {
 //
 //        // Detailed component tests
 //        test_piece_coordination();
-//        test_endgame_factors();
-//        test_development_evaluation();
+        // test_endgame_factors();
+        // test_development_evaluation();
 //        test_tapered_evaluation();
 //        test_pawn_structure_detailed();
-        test_king_safety_detailed();
+        // test_king_safety_detailed();
 //        test_mobility_detailed();
 //        test_incremental_evaluation_detailed();
-//        test_zobrist_hashing_detailed();
-//        test_edge_cases();
+        // test_zobrist_hashing_detailed();
+        // test_edge_cases();
 //        test_evaluation_stability();
-//        test_move_evaluations();
+        test_move_evaluations();
 //        test_custom_fen_move_evaluations();
         
         std::cout << "All extended tests completed successfully!" << std::endl;

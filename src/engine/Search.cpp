@@ -7,7 +7,7 @@
 // Constructor
 Search::Search() 
     : evaluator(std::make_unique<Evaluation>())
-    , transposition_table()
+    , transposition_table(&g_transposition_table)
     , stop_flag(false)
     , search_active(false)
     , search_start_time(std::chrono::steady_clock::now())
@@ -97,13 +97,6 @@ int Search::get_thread_count() const {
     return thread_count;
 }
 
-// Legacy time management worker - no longer used
-// Time checking is now integrated directly into search loops via should_stop()
-void Search::time_management_worker(std::chrono::milliseconds time_limit) {
-    // This function is kept for compatibility but is no longer used
-    // Time management is now handled by the global timer system in should_stop()
-}
-
 // Basic minimax with alpha-beta pruning and context support
 int Search::minimax_with_context(SearchContext& context, int depth, int alpha, int beta, bool maximizing_player, int ply) {
     context.stats.nodes_searched++;
@@ -113,9 +106,33 @@ int Search::minimax_with_context(SearchContext& context, int depth, int alpha, i
         return maximizing_player ? alpha : beta;
     }
     
+    // Get Zobrist hash for current position
+    uint64_t zobrist_hash = context.board.get_zobrist_hash();
+    
+    // Probe transposition table
+    TTResult tt_result = transposition_table->probe(zobrist_hash, depth, alpha, beta, ply);
+    Move tt_move;
+    
+    if (tt_result.found) {
+        context.stats.tt_hits++;
+        tt_move = tt_result.move;
+        
+        // Use TT result if we can cutoff
+        if (tt_result.can_cutoff) {
+            return tt_result.score;
+        }
+    }
+    
     // Base case: depth reached or game over
     if (depth == 0) {
-        return quiescence_search_with_context(context, alpha, beta, maximizing_player);
+        int leaf_score = quiescence_search_with_context(context, alpha, beta, maximizing_player);
+        
+        // Store leaf evaluation in transposition table
+        Move empty_move; // No best move for leaf positions
+        TTBoundType leaf_bound = TTBoundType::EXACT; // Leaf evaluations are exact
+        transposition_table->store(zobrist_hash, empty_move, leaf_score, 0, ply, leaf_bound);
+        
+        return leaf_score;
     }
     
     // Generate moves using instance method
@@ -123,20 +140,30 @@ int Search::minimax_with_context(SearchContext& context, int depth, int alpha, i
     
     // Check for checkmate or stalemate
     if (moves.empty()) {
+        int terminal_score;
         if (context.move_generator.is_in_check(context.board, context.board.get_active_color())) {
             // Checkmate - return mate score adjusted by ply
-            return maximizing_player ? -MATE_SCORE + ply : MATE_SCORE - ply;
+            terminal_score = maximizing_player ? -MATE_SCORE + ply : MATE_SCORE - ply;
         } else {
             // Stalemate
-            return DRAW_SCORE;
+            terminal_score = DRAW_SCORE;
         }
+        
+        // Store terminal position in transposition table
+        Move empty_move; // No best move for terminal positions
+        transposition_table->store(zobrist_hash, empty_move, terminal_score, depth, ply, TTBoundType::EXACT);
+        return terminal_score;
     }
     
-    // Order moves for better pruning
-    order_moves_with_context(moves, context, ply);
+    // Order moves for better pruning (prioritize TT move)
+    order_moves_with_context(moves, context, ply, tt_move);
+    
+    int best_score = maximizing_player ? -INFINITY_SCORE : INFINITY_SCORE;
+    Move best_move;
+    TTBoundType bound_type = TTBoundType::UPPER_BOUND; // default if we never improved
     
     if (maximizing_player) {
-        int max_eval = -INFINITY_SCORE;
+        bool did_cutoff = false;
         for (const Move& move : moves) {
             // Check for stop condition before each move
             if (should_stop()) {
@@ -152,18 +179,25 @@ int Search::minimax_with_context(SearchContext& context, int depth, int alpha, i
             // Unmake move using undo data
             context.board.undo_move(undo_data);
             
-            max_eval = std::max(max_eval, eval);
+            if (eval > best_score) {
+                best_score = eval;
+                best_move = move;
+            }
+            
             alpha = std::max(alpha, eval);
             
             // Beta cutoff
             if (beta <= alpha) {
                 context.stats.beta_cutoffs++;
+                did_cutoff = true;
+                bound_type = TTBoundType::LOWER_BOUND; // beta cutoff => LOWER_BOUND
                 break;
             }
         }
-        return max_eval;
+        if (!did_cutoff) bound_type = TTBoundType::EXACT;
+        
     } else {
-        int min_eval = INFINITY_SCORE;
+        bool did_cutoff = false;
         for (const Move& move : moves) {
             // Check for stop condition before each move
             if (should_stop()) {
@@ -179,17 +213,30 @@ int Search::minimax_with_context(SearchContext& context, int depth, int alpha, i
             // Unmake move using undo data
             context.board.undo_move(undo_data);
             
-            min_eval = std::min(min_eval, eval);
+            if (eval < best_score) {
+                best_score = eval;
+                best_move = move;
+            }
+            
             beta = std::min(beta, eval);
             
             // Alpha cutoff
             if (beta <= alpha) {
                 context.stats.beta_cutoffs++;
+                did_cutoff = true;
+                bound_type = TTBoundType::UPPER_BOUND; // alpha cutoff in minimizing => UPPER_BOUND
                 break;
             }
         }
-        return min_eval;
+        if (!did_cutoff) bound_type = TTBoundType::EXACT;
     }
+    
+    // Store in transposition table
+    if (best_move.is_valid()) {
+        transposition_table->store(zobrist_hash, best_move, best_score, depth, ply, bound_type);
+    }
+    
+    return best_score;
 }
 
 // Quiescence search with context support
@@ -257,6 +304,9 @@ int Search::quiescence_search_with_context(SearchContext& context, int alpha, in
 
 // Iterative deepening search
 void Search::iterative_deepening(Board& board, int max_depth, SearchResult& result) {
+    // Start new search - advance TT age
+    transposition_table->new_search();
+    
     SearchContext context(board);
     Move fallback_move;
     Move best_evaluated_move; // Track the best move that was actually evaluated
@@ -300,6 +350,14 @@ void Search::iterative_deepening(Board& board, int max_depth, SearchResult& resu
         SearchStats depth_stats;
         parallel_evaluate_moves(context.board, move_scores, depth, &depth_stats);
         
+        // Debug output
+        std::cout << "Depth " << depth
+                  << ": nodes=" << depth_stats.nodes_searched
+                  << ", tt_hits=" << depth_stats.tt_hits
+                  << ", tt_hit_rate=" << (depth_stats.nodes_searched > 0 ?
+                      (100.0 * depth_stats.tt_hits / depth_stats.nodes_searched) : 0.0)
+                  << "%" << std::endl;
+        
         // Accumulate statistics from this depth
         combined_stats.nodes_searched += depth_stats.nodes_searched;
         combined_stats.quiescence_nodes += depth_stats.quiescence_nodes;
@@ -332,6 +390,11 @@ void Search::iterative_deepening(Board& board, int max_depth, SearchResult& resu
                 result.best_move = best_evaluated_move;
                 result.score = best_evaluated_score;
                 result.depth = depth;
+                
+                // Debug output: Display best move for this depth
+                // std::cout << "Depth " << depth << ": Best move = " 
+                //          << best_evaluated_move.to_algebraic() 
+                //          << " (score: " << best_evaluated_score << ")" << std::endl;
                 
                 // Sort moves for next iteration (best move first)
                 std::sort(move_scores.begin(), move_scores.end(),
@@ -367,6 +430,11 @@ void Search::iterative_deepening(Board& board, int max_depth, SearchResult& resu
 
 // Move ordering with context
 void Search::order_moves_with_context(MoveList& moves, SearchContext& context, int ply, const Move& tt_move) {
+    // Check time limit before expensive sorting operation
+    if (should_stop()) {
+        return;
+    }
+    
     // Simple move ordering: captures first, then quiet moves
     std::sort(moves.begin(), moves.end(), [&](const Move& a, const Move& b) {
         return evaluate_move_priority_with_context(a, context, ply, tt_move) > 
@@ -419,15 +487,11 @@ int Search::get_piece_value(char piece) const {
     }
 }
 
-// Check if side has non-pawn material
-bool Search::has_non_pawn_material(const Board& board, Board::Color color) const {
-    // This is a simplified check - in a real implementation you'd check the bitboards
-    return true; // Placeholder implementation
-}
+//TODO: Remove duplicate backup move in all the search functions (the backup already exists in iterative_deepening)
 
-// MAIN SEARCH FUNCTIONS - THE 4 REQUIRED FUNCTIONS
+//TODO: Remove the undo move where possible (if each thread has its own board copy there is no need to undo)
 
-//TODO: Singlethread often returns different moves than multithread at the same exact depth - investigate why
+//TODO: Investigate search at depth 1 and transposition table hits at depth 1
 
 // 1. Search move without time limit
 Move Search::search_move(Board& board, int max_depth) {
@@ -442,9 +506,14 @@ Move Search::search_move(Board& board, int max_depth) {
         iterative_deepening(board, max_depth, result);
     } catch (...) {
         // Ensure we always return a valid move
+        // Clear transposition table even if search was interrupted
+        transposition_table->clear();
     }
     
     search_active.store(false, std::memory_order_release);
+    
+    // Clear transposition table after search completion
+    transposition_table->clear();
     
     // If no move found, return first legal move as fallback
     if (!result.best_move.is_valid()) {
@@ -483,11 +552,16 @@ Move Search::search_move(Board& board, std::chrono::milliseconds time_limit, int
         iterative_deepening(board, max_depth, result);
     } catch (...) {
         // Ensure we always return a valid move
+        // Clear transposition table even if search was interrupted
+        transposition_table->clear();
     }
     
     // Disable global timer
     time_limit_active.store(false, std::memory_order_release);
     search_active.store(false, std::memory_order_release);
+    
+    // Clear transposition table after search completion
+    transposition_table->clear();
     
     // Calculate elapsed time
     auto end_time = std::chrono::steady_clock::now();
@@ -512,9 +586,14 @@ SearchResult Search::search(Board& board, int max_depth) {
         iterative_deepening(board, max_depth, result);
     } catch (...) {
         // Ensure we always return a valid move
+        // Clear transposition table even if search was interrupted
+        transposition_table->clear();
     }
     
     search_active.store(false, std::memory_order_release);
+    
+    // Clear transposition table after search completion
+    transposition_table->clear();
     
     // If no move found, return first legal move as fallback
     if (!result.best_move.is_valid()) {
@@ -557,11 +636,16 @@ SearchResult Search::search(Board& board, std::chrono::milliseconds time_limit, 
         iterative_deepening(board, max_depth, result);
     } catch (...) {
         // Ensure we always return a valid move
+        // Clear transposition table even if search was interrupted
+        transposition_table->clear();
     }
     
     // Disable global timer
     time_limit_active.store(false, std::memory_order_release);
     search_active.store(false, std::memory_order_release);
+    
+    // Clear transposition table after search completion
+    transposition_table->clear();
     
     // Calculate elapsed time
     auto end_time = std::chrono::steady_clock::now();
@@ -569,6 +653,8 @@ SearchResult Search::search(Board& board, std::chrono::milliseconds time_limit, 
     
     return result;
 }
+
+// TODO: Use the proper vector (SmallVector) instead of std::vector for better performance
 
 // New function: Parallel move evaluation at root
 void Search::parallel_evaluate_moves(Board& board, std::vector<MoveScore>& move_scores, int depth, SearchStats* out_stats) {
@@ -600,7 +686,14 @@ void Search::parallel_evaluate_moves(Board& board, std::vector<MoveScore>& move_
             Board thread_board = board;
             SearchContext thread_context(thread_board);
             
+            // DON'T clear stats here - accumulate across all moves this thread evaluates
+            
             while (!should_stop()) {
+                // Check time limit before getting next move
+                if (should_stop()) {
+                    break;
+                }
+                
                 // Get next move to evaluate
                 int move_idx = next_move_index.fetch_add(1, std::memory_order_relaxed);
                 
@@ -608,10 +701,15 @@ void Search::parallel_evaluate_moves(Board& board, std::vector<MoveScore>& move_
                     break; // No more moves to evaluate
                 }
                 
+                // Check time limit before evaluating move
+                if (should_stop()) {
+                    break;
+                }
+                
                 const Move& move = move_scores[move_idx].move;
                 
-                // Reset thread stats for this move
-                thread_context.stats.clear();
+                // DON'T clear stats for each move - we want cumulative stats
+                // thread_context.stats.clear();  // <-- REMOVED THIS LINE
                 
                 // Make move
                 BitboardMoveUndoData undo_data = thread_board.make_move(move);
@@ -624,20 +722,23 @@ void Search::parallel_evaluate_moves(Board& board, std::vector<MoveScore>& move_
                 // Unmake move
                 thread_board.undo_move(undo_data);
                 
-                // Store result (thread-safe)
+                // Store result (thread-safe) - check time limit one more time
                 if (!should_stop()) {
                     std::lock_guard<std::mutex> lock(scores_mutex);
                     move_scores[move_idx].score = score;
                     move_scores[move_idx].evaluated = true;
-                    
-                    // Accumulate thread statistics
-                    combined_stats.nodes_searched += thread_context.stats.nodes_searched;
-                    combined_stats.quiescence_nodes += thread_context.stats.quiescence_nodes;
-                    combined_stats.tt_hits += thread_context.stats.tt_hits;
-                    combined_stats.beta_cutoffs += thread_context.stats.beta_cutoffs;
-                    combined_stats.null_move_cutoffs += thread_context.stats.null_move_cutoffs;
-                    combined_stats.lmr_reductions += thread_context.stats.lmr_reductions;
                 }
+            }
+            
+            // Accumulate this thread's total stats at the end
+            {
+                std::lock_guard<std::mutex> lock(scores_mutex);
+                combined_stats.nodes_searched += thread_context.stats.nodes_searched;
+                combined_stats.quiescence_nodes += thread_context.stats.quiescence_nodes;
+                combined_stats.tt_hits += thread_context.stats.tt_hits;
+                combined_stats.beta_cutoffs += thread_context.stats.beta_cutoffs;
+                combined_stats.null_move_cutoffs += thread_context.stats.null_move_cutoffs;
+                combined_stats.lmr_reductions += thread_context.stats.lmr_reductions;
             }
         });
     }
@@ -655,6 +756,8 @@ void Search::parallel_evaluate_moves(Board& board, std::vector<MoveScore>& move_
     }
 }
 
+//TODO: Investigate, this function seems to return different moves than the parallel version at the same exact depth
+
 // Sequential fallback for single-threaded evaluation
 void Search::sequential_evaluate_moves(Board& board, std::vector<MoveScore>& move_scores, int depth, SearchStats* out_stats) {
     SearchContext context(board);
@@ -667,8 +770,8 @@ void Search::sequential_evaluate_moves(Board& board, std::vector<MoveScore>& mov
         
         const Move& move = ms.move;
         
-        // Reset stats for this move
-        context.stats.clear();
+        // DON'T clear stats for each move
+        // context.stats.clear();  // <-- REMOVED THIS LINE
         
         // Make move
         BitboardMoveUndoData undo_data = context.board.make_move(move);
@@ -684,19 +787,11 @@ void Search::sequential_evaluate_moves(Board& board, std::vector<MoveScore>& mov
         // Store result
         ms.score = score;
         ms.evaluated = true;
-        
-        // Accumulate statistics
-        accumulated_stats.nodes_searched += context.stats.nodes_searched;
-        accumulated_stats.quiescence_nodes += context.stats.quiescence_nodes;
-        accumulated_stats.tt_hits += context.stats.tt_hits;
-        accumulated_stats.beta_cutoffs += context.stats.beta_cutoffs;
-        accumulated_stats.null_move_cutoffs += context.stats.null_move_cutoffs;
-        accumulated_stats.lmr_reductions += context.stats.lmr_reductions;
     }
     
-    // Return accumulated statistics if requested
+    // Accumulate all stats at once
     if (out_stats) {
-        *out_stats = accumulated_stats;
+        *out_stats = context.stats;
     }
 }
 
@@ -723,6 +818,11 @@ void Search::parallel_evaluate_moves_with_aspiration(Board& board,
     
     // Re-search with full window if needed
     if (need_research && !should_stop()) {
+        // Check time limit before expensive re-search
+        if (should_stop()) {
+            return;
+        }
+        
         for (auto& ms : move_scores) {
             ms.evaluated = false;
         }
@@ -761,6 +861,11 @@ void Search::parallel_evaluate_moves_windowed(Board& board,
                 int move_idx = next_move_index.fetch_add(1, std::memory_order_relaxed);
                 
                 if (move_idx >= num_moves) {
+                    break;
+                }
+                
+                // Check time limit before evaluating move
+                if (should_stop()) {
                     break;
                 }
                 
@@ -835,10 +940,4 @@ void Search::sequential_evaluate_moves_windowed(Board& board,
             alpha = score;
         }
     }
-}
-
-SearchResult Search::search_incremental(Board& board, int max_depth, bool debug_output) {
-    SearchResult result;
-    // Placeholder implementation
-    return result;
 }

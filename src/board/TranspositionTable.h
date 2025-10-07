@@ -1,157 +1,410 @@
 #ifndef TRANSPOSITION_TABLE_H
 #define TRANSPOSITION_TABLE_H
 
-#include "../board/Move.h"
 #include <cstdint>
-#include <atomic>
 #include <memory>
-#include <mutex>
+#include <atomic>
+#include <algorithm>
+#include <shared_mutex>
+#include "Move.h"
+
+// Forward declarations
+class Board;
 
 /**
- * @enum TTEntryType
- * @brief Types of transposition table entries for alpha-beta bounds
+ * @brief Enumeration for transposition table bound types
+ * 
+ * Defines the type of bound stored in a transposition table entry:
+ * - EXACT: Exact score from a PV node
+ * - LOWER_BOUND: Beta cutoff (fail-high), score >= beta
+ * - UPPER_BOUND: Alpha cutoff (fail-low), score <= alpha
  */
-enum class TTEntryType : uint8_t {
+enum class TTBoundType : uint8_t {
     EXACT = 0,       ///< Exact score (PV node)
     LOWER_BOUND = 1, ///< Beta cutoff (fail-high)
     UPPER_BOUND = 2  ///< Alpha cutoff (fail-low)
 };
 
 /**
- * @struct TTEntry
- * @brief Transposition table entry structure
+ * @brief Enumeration for transposition table replacement strategies
  * 
- * Stores position information for the transposition table including
- * Zobrist key, search depth, evaluation score, bound type, best move,
- * and age for replacement policy.
+ * Defines how entries are replaced when the table is full:
+ * - DEPTH_PREFERRED: Always prefer entries with higher depth
+ * - AGE_PREFERRED: Always prefer newer entries
+ * - HYBRID: Combine depth and age considerations (default)
  */
-struct alignas(16) TTEntry {
-    uint64_t key;        ///< Zobrist hash key for position verification
-    int16_t depth;       ///< Search depth when this entry was stored
-    int16_t score;       ///< Evaluation score (centipawns or mate score)
-    uint8_t type;        ///< Entry type (TTEntryType cast to uint8_t)
-    uint32_t move;       ///< Best move (encoded as uint32_t)
-    uint8_t age;         ///< Age for replacement policy
-    uint8_t padding[3];  ///< Padding to ensure 16-byte alignment
-    
-    /**
-     * @brief Default constructor - initializes entry as empty
-     */
-    TTEntry() : key(0), depth(-1), score(0), type(static_cast<uint8_t>(TTEntryType::EXACT)), move(0), age(0) {
-        padding[0] = padding[1] = padding[2] = 0;
-    }
-    
-    /**
-     * @brief Constructor with all parameters
-     */
-    TTEntry(uint64_t k, int16_t d, int16_t s, TTEntryType t, uint32_t m, uint8_t a)
-        : key(k), depth(d), score(s), type(static_cast<uint8_t>(t)), move(m), age(a) {
-        padding[0] = padding[1] = padding[2] = 0;
-    }
-    
-    /**
-     * @brief Check if this entry is valid (has been initialized)
-     */
-    bool is_valid() const { return depth >= 0; }
-    
-    /**
-     * @brief Get the entry type as enum
-     */
-    TTEntryType get_type() const { return static_cast<TTEntryType>(type); }
+enum class TTReplacementStrategy : uint8_t {
+    DEPTH_PREFERRED = 0,  ///< Always prefer higher depth
+    AGE_PREFERRED = 1,    ///< Always prefer newer entries
+    HYBRID = 2           ///< Combine depth and age (default)
 };
 
 /**
- * @class TranspositionTable
- * @brief Lock-light transposition table with Zobrist hashing
+ * @brief Transposition table entry structure
  * 
- * Implements a high-performance transposition table for chess search
- * with the following features:
- * - Power-of-two sizing for fast indexing
- * - Lockless reads with atomic writes
- * - Replacement policy (replace shallower or older entries)
- * - Thread-safe access for multi-threaded search
- * - Age-based entry management
+ * Optimized 16-byte cache-aligned structure for storing position evaluations.
+ */
+struct alignas(16) TTEntry {
+    uint64_t key;           ///< 64-bit Zobrist hash key
+    uint32_t move;          ///< Packed move representation
+    int16_t score;          ///< Position evaluation score
+    uint8_t depth;          ///< Search depth for this entry
+    uint8_t flags;          ///< Packed bound_type (2 bits) and age (6 bits)
+    
+    /**
+     * @brief Default constructor - creates empty entry
+     */
+    TTEntry() : key(0), move(0), score(0), depth(0), flags(0) {}
+    
+    /**
+     * @brief Check if entry is empty/unused
+     * @return true if entry has never been used
+     */
+    bool is_empty() const {
+        return key == 0;
+    }
+    
+    /**
+     * @brief Get bound type from packed flags
+     * @return Bound type (EXACT/LOWER/UPPER)
+     */
+    TTBoundType get_bound_type() const { 
+        return static_cast<TTBoundType>(flags & 0x3); 
+    }
+    
+    /**
+     * @brief Get age from packed flags
+     * @return Entry age (0-63)
+     */
+    uint8_t get_age() const { 
+        return (flags >> 2) & 0x3F; 
+    }
+    
+    /**
+     * @brief Set bound type in packed flags
+     * @param type Bound type to set
+     */
+    void set_bound_type(TTBoundType type) { 
+        flags = (flags & 0xFC) | static_cast<uint8_t>(type); 
+    }
+    
+    /**
+     * @brief Set age in packed flags
+     * @param age Age to set (0-63)
+     */
+    void set_age(uint8_t age) { 
+        flags = (flags & 0x3) | ((age & 0x3F) << 2); 
+    }
+};
+
+/**
+ * @brief Transposition table bucket structure
+ * 
+ * 64-byte cache-line aligned bucket containing 4 TTEntry structures.
+ * This reduces hash collisions and improves cache performance.
+ */
+struct alignas(64) TTBucket {
+    static constexpr int BUCKET_SIZE = 4;
+    TTEntry entries[BUCKET_SIZE];  ///< 4 entries per bucket
+    
+    /**
+     * @brief Default constructor - initializes empty bucket
+     */
+    TTBucket() = default;
+    
+    /**
+     * @brief Find entry with matching key
+     * @param key Zobrist hash key to search for
+     * @return Pointer to matching entry or nullptr if not found
+     */
+    TTEntry* find_entry(uint64_t key) {
+        for (int i = 0; i < BUCKET_SIZE; ++i) {
+            if (entries[i].key == key) {
+                return &entries[i];
+            }
+        }
+        return nullptr;
+    }
+    
+    /**
+     * @brief Find best replacement candidate
+     * @param current_age Current search age
+     * @return Index of best entry to replace
+     */
+    int find_replacement_index(uint8_t current_age) {
+        int best_idx = 0;
+        int best_score = replacement_score(entries[0], current_age);
+        
+        for (int i = 1; i < BUCKET_SIZE; ++i) {
+            int score = replacement_score(entries[i], current_age);
+            if (score > best_score) {
+                best_score = score;
+                best_idx = i;
+            }
+        }
+        return best_idx;
+    }
+    
+private:
+    /**
+     * @brief Calculate replacement score for entry
+     * @param entry Entry to evaluate
+     * @param current_age Current search age
+     * @return Replacement score (higher = better candidate for replacement)
+     */
+    int replacement_score(const TTEntry& entry, uint8_t current_age) {
+        int age_diff = (current_age - entry.get_age()) & 0x3F;
+        return (age_diff << 8) - entry.depth;  // Prefer old entries and shallow depths
+    }
+};
+
+/**
+ * @brief Transposition table statistics structure
+ * 
+ * Contains performance metrics and diagnostic information.
+ */
+struct TTStats {
+    uint64_t probes;        ///< Total probe operations
+    uint64_t hits;          ///< Successful hits
+    uint64_t cutoffs;       ///< Alpha-beta cutoffs from TT
+    uint64_t collisions;    ///< Hash collisions detected
+    double fill_rate;       ///< Percentage of table filled
+    double hit_rate;        ///< Hit rate percentage
+    
+    /**
+     * @brief Default constructor
+     */
+    TTStats() : probes(0), hits(0), cutoffs(0), collisions(0), fill_rate(0.0), hit_rate(0.0) {}
+};
+
+/**
+ * @brief Transposition table probe result
+ * 
+ * Contains the result of a transposition table lookup.
+ */
+struct TTResult {
+    bool found = false;                     ///< Whether a usable entry was found
+    bool can_cutoff = false;                ///< Whether this enables alpha-beta cutoff
+    Move move;                              ///< Best move from TT
+    int score = 0;                         ///< Position evaluation (adjusted for ply)
+    TTBoundType bound_type = TTBoundType::EXACT; ///< Type of bound
+    uint8_t depth = 0;                     ///< Depth of stored evaluation
+    uint8_t age = 0;                       ///< Age of the entry
+    
+    /**
+     * @brief Default constructor
+     */
+    TTResult() = default;
+};
+
+/**
+ * @brief Main transposition table class
+ * 
+ * High-performance hash table for caching chess position evaluations.
+ * Features:
+ * - Thread-safe lock-free operations
+ * - Configurable size (16MB to 32GB)
+ * - Multi-bucket collision handling
+ * - Advanced replacement strategies
+ * - Comprehensive statistics
+ * - Cache-optimized memory layout
  */
 class TranspositionTable {
+private:
+    std::unique_ptr<TTBucket[]> table_;     ///< Hash table buckets
+    size_t bucket_count_;                   ///< Number of buckets
+    size_t size_mb_;                       ///< Table size in MB
+    uint8_t age_;                          ///< Current search age (0-255)
+    TTReplacementStrategy replacement_strategy_; ///< Replacement strategy
+    
+    // Thread-safe statistics
+    mutable TTStats stats_;
+    mutable std::shared_mutex table_mutex_;     ///< Mutex for thread-safe access
+    
+    // Constants
+    static constexpr size_t MIN_SIZE_MB = 1;     ///< Minimum table size
+    static constexpr size_t MAX_SIZE_MB = 32768; ///< Maximum table size (32GB)
+    static constexpr int MATE_SCORE = 30000;     ///< Mate score threshold
+    
 public:
     /**
-     * @brief Constructor with specified size
-     * @param size_mb Size of the table in megabytes (will be rounded to power of 2)
+     * @brief Constructor with configurable size
+     * 
+     * @param size_mb Hash table size in megabytes (default: 64MB)
      */
     explicit TranspositionTable(size_t size_mb = 64);
     
     /**
      * @brief Destructor
      */
-    ~TranspositionTable() = default;
+    ~TranspositionTable();
+    
+    // Disable copy constructor and assignment
+    TranspositionTable(const TranspositionTable&) = delete;
+    TranspositionTable& operator=(const TranspositionTable&) = delete;
     
     /**
-     * @brief Probe the transposition table for a position
-     * @param key Zobrist hash key of the position
-     * @param depth Current search depth
-     * @param alpha Alpha bound
-     * @param beta Beta bound
-     * @param ply Current ply from root (for mate score adjustment)
-     * @return Pointer to TTEntry if found and usable, nullptr otherwise
+     * @brief Probe transposition table for position
+     * 
+     * Thread-safe lookup operation that searches for a stored evaluation
+     * of the given position.
+     * 
+     * @param zobrist_key 64-bit Zobrist hash of position
+     * @param depth Minimum required search depth
+     * @param alpha Alpha bound for cutoff detection
+     * @param beta Beta bound for cutoff detection
+     * @param ply Current ply from root for mate score adjustment
+     * @return TTResult containing hit information and data
      */
-    const TTEntry* probe(uint64_t key, int depth, int alpha, int beta, int ply) const;
+    TTResult probe(uint64_t zobrist_key, int depth, int alpha, int beta, int ply);
     
     /**
-     * @brief Store an entry in the transposition table
-     * @param key Zobrist hash key of the position
-     * @param depth Search depth
-     * @param score Evaluation score
-     * @param type Entry type (EXACT, LOWER_BOUND, UPPER_BOUND)
-     * @param best_move Best move found (0 if none)
-     * @param ply Current ply from root (for mate score adjustment)
+     * @brief Store position evaluation in transposition table
+     * 
+     * Thread-safe store operation that saves a position evaluation
+     * with appropriate replacement strategy.
+     * 
+     * @param zobrist_key 64-bit Zobrist hash of position
+     * @param best_move Best move found for this position
+     * @param score Position evaluation score
+     * @param depth Search depth for this evaluation
+     * @param ply Current ply from root for mate score storage
+     * @param bound_type Type of bound (EXACT/LOWER/UPPER)
      */
-    void store(uint64_t key, int depth, int score, TTEntryType type, uint32_t best_move, int ply);
+    void store(uint64_t zobrist_key, const Move& best_move, int score, 
+               int depth, int ply, TTBoundType bound_type);
     
     /**
-     * @brief Get the best move from TT for move ordering
-     * @param key Zobrist hash key of the position
-     * @return Best move if found, invalid move otherwise
+     * @brief Resize transposition table
+     * 
+     * Changes the table size and clears all entries.
+     * 
+     * @param new_size_mb New size in megabytes
+     * @return true if resize was successful
      */
-    Move get_pv_move(uint64_t key) const;
+    bool resize(size_t new_size_mb);
     
     /**
-     * @brief Clear the entire transposition table
+     * @brief Clear all entries in the table
+     * 
+     * Resets all entries to empty state and resets statistics.
      */
     void clear();
     
     /**
-     * @brief Increment the age counter (called at the start of each search)
+     * @brief Start new search iteration
+     * 
+     * Increments the age counter for the new search.
+     * This helps with replacement strategy decisions.
      */
-    void new_search() { current_age = (current_age + 1) & 0xFF; }
+    void new_search();
     
     /**
-     * @brief Get table statistics
+     * @brief Get transposition table statistics
+     * 
+     * Returns current performance statistics including hit rates,
+     * collision counts, and memory utilization metrics.
+     * 
+     * @return TTStats Current statistics snapshot
      */
-    size_t get_size() const { return table_size; }
-    size_t get_usage() const;
+    TTStats get_statistics() const;
     
+    /**
+     * @brief Reset statistics
+     */
+    void reset_stats();
+    
+    /**
+     * @brief Get table size in MB
+     * 
+     * @return Current table size in megabytes
+     */
+    size_t get_size_mb() const;
+    
+    /**
+     * @brief Get bucket count
+     * 
+     * @return Number of buckets in the table
+     */
+    size_t get_bucket_count() const;
+    
+    /**
+     * @brief Get hash full percentage
+     * 
+     * Estimates how full the hash table is by sampling entries.
+     * 
+     * @return Percentage full (0-1000, where 1000 = 100.0%)
+     */
+    int get_hashfull() const;
+    
+    /**
+     * @brief Set replacement strategy
+     * 
+     * @param strategy New replacement strategy to use
+     */
+    void set_replacement_strategy(TTReplacementStrategy strategy);
+    
+    /**
+     * @brief Prefetch bucket for given key (optimization)
+     * 
+     * Hints to the processor to prefetch the cache line containing
+     * the bucket for the given key. This can reduce memory latency.
+     * 
+     * @param zobrist_key Key to prefetch bucket for
+     */
+    void prefetch(uint64_t zobrist_key);
+
 private:
-    std::unique_ptr<TTEntry[]> table;  ///< The hash table
-    std::unique_ptr<std::mutex[]> mutexes;  ///< Mutexes for thread safety
-    size_t table_size;                              ///< Size of the table (power of 2)
-    size_t index_mask;                              ///< Mask for fast indexing (size - 1)
-    uint8_t current_age;                            ///< Current age counter
+    /**
+     * @brief Calculate bucket index from Zobrist key
+     * 
+     * @param zobrist_hash 64-bit Zobrist hash
+     * @return Bucket index
+     */
+    size_t get_bucket_index(uint64_t zobrist_key) const;
     
     /**
-     * @brief Get table index from hash key
+     * @brief Find best replacement candidate using current strategy
+     * 
+     * @param bucket Bucket to search in
+     * @param depth Current search depth
+     * @return Index of best entry to replace
      */
-    size_t get_index(uint64_t key) const { return key & index_mask; }
+    int find_replacement_index(const TTBucket& bucket, int depth);
     
     /**
-     * @brief Adjust mate scores for storage/retrieval
+     * @brief Adjust mate scores for storage in TT
+     * 
+     * @param score Raw score
+     * @param ply Current ply
+     * @return Adjusted score for storage
      */
-    int adjust_mate_score_for_storage(int score, int ply) const;
-    int adjust_mate_score_for_retrieval(int score, int ply) const;
+    int adjust_mate_score_to_tt(int score, int ply);
     
     /**
-     * @brief Check if we should replace an existing entry
+     * @brief Adjust mate scores when retrieving from TT
+     * 
+     * @param score Stored score
+     * @param ply Current ply
+     * @return Adjusted score for current position
      */
-    bool should_replace(const TTEntry& existing, int new_depth, uint8_t new_age) const;
+    int adjust_mate_score_from_tt(int score, int ply);
+    
+    /**
+     * @brief Allocate aligned memory for hash table
+     * 
+     * @param bucket_count Number of buckets to allocate
+     * @return true if allocation successful
+     */
+    bool allocate_memory(size_t bucket_count);
+    
+    /**
+     * @brief Deallocate hash table memory
+     */
+    void deallocate_memory();
 };
+
+// Global transposition table instance
+extern TranspositionTable g_transposition_table;
 
 #endif // TRANSPOSITION_TABLE_H
