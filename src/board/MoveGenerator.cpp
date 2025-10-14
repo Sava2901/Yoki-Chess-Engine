@@ -49,7 +49,7 @@ static constexpr int EN_PASSANT_BONUS = 105;
     #define USE_PEXT 0
 #endif
 
-MoveGenerator::MoveGenerator() : nodes_searched(0), moves_generated(0) {
+MoveGenerator::MoveGenerator() {
     // Initialize bitboard utilities if not already done
     BitboardUtils::init();
 }
@@ -97,7 +97,6 @@ MoveList MoveGenerator::generate_all_moves(const Board& board) {
     generate_castling_moves(board, moves);
     generate_en_passant_moves(board, moves);
 
-    moves_generated += moves.size();
     return moves;
 }
 
@@ -999,10 +998,28 @@ Bitboard MoveGenerator::get_check_mask(const Board& board, Board::Color color) {
 Bitboard MoveGenerator::get_between_squares(int sq1, int sq2) {
     Bitboard between = 0;
     
+    // If squares are the same, return empty bitboard
+    if (sq1 == sq2) {
+        return between;
+    }
+    
     int rank1 = BitboardUtils::get_rank(sq1);
     int file1 = BitboardUtils::get_file(sq1);
     int rank2 = BitboardUtils::get_rank(sq2);
     int file2 = BitboardUtils::get_file(sq2);
+    
+    int rank_diff = rank2 - rank1;
+    int file_diff = file2 - file1;
+    
+    // Check if squares are aligned (same rank, file, or diagonal)
+    bool same_rank = (rank_diff == 0);
+    bool same_file = (file_diff == 0);
+    bool same_diagonal = (std::abs(rank_diff) == std::abs(file_diff));
+    
+    // If squares are not aligned, return empty bitboard
+    if (!same_rank && !same_file && !same_diagonal) {
+        return between;
+    }
     
     int rank_dir = (rank2 > rank1) ? 1 : (rank2 < rank1) ? -1 : 0;
     int file_dir = (file2 > file1) ? 1 : (file2 < file1) ? -1 : 0;

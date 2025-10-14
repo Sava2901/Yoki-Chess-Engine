@@ -1,943 +1,941 @@
 #include "Search.h"
 #include <algorithm>
-#include <chrono>
-#include <thread>
-#include <future>
+#include <random>
+#include <iomanip>
+#include <iostream>
 
-// Constructor
-Search::Search() 
-    : evaluator(std::make_unique<Evaluation>())
-    , transposition_table(&g_transposition_table)
-    , stop_flag(false)
-    , search_active(false)
-    , search_start_time(std::chrono::steady_clock::now())
-    , time_limit_ms(std::chrono::milliseconds(0))
-    , time_limit_active(false)
-    , thread_count(4)
-    , thread_pool_active(false)
-{
+// Material values for piece evaluation
+static constexpr int MATERIAL_VALUES[6] = {
+    100,  // Pawn
+    320,  // Knight
+    330,  // Bishop
+    500,  // Rook
+    900,  // Queen
+    20000 // King
+};
+
+// ThreadPool implementation
+
+ThreadPool::ThreadPool(int num_threads) : stop_flag(false) {
+    // ThreadPool constructor - worker threads removed
+}
+
+ThreadPool::~ThreadPool() {
+    stop();
+}
+
+void ThreadPool::stop() {
+    {
+        std::unique_lock<std::mutex> lock(queue_mutex);
+        stop_flag = true;
+    }
+    condition.notify_all();
+    
+    for (std::thread& worker : workers) {
+        if (worker.joinable()) {
+            worker.join();
+        }
+    }
+    workers.clear();
+}
+
+void ThreadPool::restart(int num_threads) {
+    stop();
+    stop_flag = false;
+    
+    // ThreadPool restart - worker threads removed
+}
+
+Search::Search() : Search(SearchConfig()) {}
+
+Search::Search(const SearchConfig& config) : config(config) {
+    // Initialize transposition table
+    tt = std::make_unique<TranspositionTable>(config.tt_size_mb * 1024 * 1024);
+    
+    // Initialize evaluator and move generator
+    evaluator = std::make_unique<Evaluation>();
+    move_gen = std::make_unique<MoveGenerator>();
+    
     // Initialize thread pool
-    init_thread_pool();
+    thread_pool = std::make_unique<ThreadPool>(config.thread_count);
+    
+    // Initialize PV table
+    pv_table.resize(MAX_PLY);
+    for (auto& pv : pv_table) {
+        pv.reserve(MAX_PLY);
+    }
+    
+    // Clear tables
+    clear_tables();
 }
 
-// Destructor
 Search::~Search() {
-    // Stop any running search
     stop_search();
-    
-    // Shutdown thread pool
-    shutdown_thread_pool();
-    
-    // No longer using separate time manager thread - time checking is integrated into search loops
+    stop_timer();  // Clean up timer thread
 }
 
-// Initialize thread pool
-void Search::init_thread_pool() {
-    std::lock_guard<std::mutex> lock(search_mutex);
-    thread_pool_active = true;
+Move Search::search_move(const Board& board, int depth) {
+    SearchResult result = search(board, depth);
+    return result.best_move;
 }
 
-// Shutdown thread pool
-void Search::shutdown_thread_pool() {
-    std::lock_guard<std::mutex> lock(search_mutex);
-    thread_pool_active = false;
-    
-    // Join all worker threads
-    for (auto& thread : worker_threads) {
-        if (thread.joinable()) {
-            thread.join();
-        }
+Move Search::search_move(const Board& board, std::chrono::milliseconds time_limit, int max_depth) {
+    SearchResult result = search(board, time_limit, max_depth);
+    return result.best_move;
+}
+
+SearchResult Search::search(const Board& board, int depth) {
+    return iterative_deepening(board, depth, std::chrono::milliseconds(0));
+}
+
+SearchResult Search::search(const Board& board, std::chrono::milliseconds time_limit, int max_depth) {
+    return iterative_deepening(board, max_depth, time_limit);
+}
+
+void Search::set_thread_count(int thread_count) {
+    if (thread_count != config.thread_count) {
+        config.thread_count = thread_count;
+        thread_pool->restart(thread_count);
     }
-    worker_threads.clear();
 }
 
-// Stop search operation
-void Search::stop_search() {
-    stop_flag.store(true, std::memory_order_release);
-}
-
-// Check if search should stop - includes time limit checking
-bool Search::should_stop() const {
-    // First check the manual stop flag
-    if (stop_flag.load(std::memory_order_acquire)) {
-        return true;
-    }
-    
-    // Then check time limit if active
-    if (time_limit_active.load(std::memory_order_acquire)) {
-        auto current_time = std::chrono::steady_clock::now();
-        auto start_time = search_start_time.load(std::memory_order_acquire);
-        auto limit = time_limit_ms.load(std::memory_order_acquire);
-        
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - start_time);
-        if (elapsed >= limit) {
-            // Time limit exceeded - set stop flag for other threads
-            const_cast<Search*>(this)->stop_flag.store(true, std::memory_order_release);
-            return true;
-        }
-    }
-    
-    return false;
-}
-
-// Check if search is active
-bool Search::is_searching() const {
-    return search_active.load(std::memory_order_acquire);
-}
-
-// Set thread count
-void Search::set_thread_count(int num_threads) {
-    std::lock_guard<std::mutex> lock(search_mutex);
-    thread_count = std::max(MIN_THREADS, std::min(MAX_THREADS, num_threads));
-}
-
-// Get thread count
 int Search::get_thread_count() const {
-    std::lock_guard<std::mutex> lock(search_mutex);
-    return thread_count;
+    return config.thread_count;
 }
 
-// Basic minimax with alpha-beta pruning and context support
-int Search::minimax_with_context(SearchContext& context, int depth, int alpha, int beta, bool maximizing_player, int ply) {
-    context.stats.nodes_searched++;
+void Search::stop_search() {
+    stop_flag.store(true, std::memory_order_relaxed);
+    search_cv.notify_all();
+}
+
+bool Search::should_stop() const {
+    return stop_flag.load(std::memory_order_relaxed);
+}
+
+void Search::set_config(const SearchConfig& new_config) {
+    config = new_config;
     
-    // Check for time limit every 1000 nodes for responsiveness
-    if ((context.stats.nodes_searched % 1000) == 0 && should_stop()) {
-        return maximizing_player ? alpha : beta;
+    // Update thread pool if needed
+    if (thread_pool->get_thread_count() != config.thread_count) {
+        thread_pool->restart(config.thread_count);
     }
     
-    // Get Zobrist hash for current position
-    uint64_t zobrist_hash = context.board.get_zobrist_hash();
+    // Resize transposition table if needed
+    size_t new_tt_size = config.tt_size_mb * 1024 * 1024;
+    if (tt->get_size_mb() != new_tt_size) {
+        tt = std::make_unique<TranspositionTable>(new_tt_size);
+    }
+}
+
+void Search::clear_tables() {
+    if (tt) tt->clear();
+    killer_moves.clear();
+    history_table.clear();
+    current_stats.reset();
+}
+
+SearchResult Search::iterative_deepening(const Board& board, int max_depth, 
+                                        std::chrono::milliseconds time_limit) {
+    // Reset search state
+    stop_flag.store(false, std::memory_order_relaxed);
+    search_start_time = std::chrono::steady_clock::now();
+    allocated_time = time_limit;
+    current_stats.reset();
     
-    // Probe transposition table
-    TTResult tt_result = transposition_table->probe(zobrist_hash, depth, alpha, beta, ply);
+    // *** START TIMER THREAD ***
+    start_timer(time_limit);
+    
+    SearchResult result;
+    
+    // Generate root moves first to ensure we have valid moves available
+    Board mutable_board = board;
+    MoveList legal_moves = move_gen->generate_legal_moves(mutable_board);
+
+    if (legal_moves.empty()) {
+        stop_timer();
+        result.best_move = Move();
+        return result;
+    }
+    
+    // Always set a fallback valid move - use the first legal move
+    result.best_move = legal_moves[0];
+    result.score = evaluator->evaluate(board);
+    result.depth = 0;
+    
+    // If only one legal move, return it immediately
+    if (legal_moves.size() == 1) {
+        stop_timer();
+        result.depth = 1;
+        return result;
+    }
+    
+    int prev_score = 0;
+    std::vector<Move> best_pv;
+    
+    // Iterative deepening loop
+    try {
+        for (int depth = 1; depth <= max_depth; ++depth) {
+            if (should_stop()) {
+                break;
+            }
+
+            std::vector<Move> current_pv;
+            int score;
+            
+            // Use regular alpha-beta search
+            score = alpha_beta(const_cast<Board&>(board), depth, -MATE_SCORE, MATE_SCORE, 0, current_pv);
+            
+            if (!current_pv.empty()) {
+                result.best_move = current_pv[0];
+                result.score = score;
+                result.depth = depth;
+                result.principal_variation = current_pv;
+                prev_score = score;
+            }
+            
+            // Check for mate
+            if (abs(score) > MATE_SCORE - 100) {
+                break; // Found mate, no need to search deeper
+            }
+            
+        }
+    } catch (const TimeUpException&) {
+        // Time expired during search - gracefully return best move found so far
+        std::cout << "TimeUpException caught in iterative_deepening - returning best move found" << std::endl;
+    } catch (const std::exception& e) {
+        std::cerr << "Exception during search: " << e.what() << std::endl;
+    }
+    
+    stop_timer();
+    
+    // Calculate final statistics
+    auto end_time = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - search_start_time);
+    current_stats.time_elapsed_ms = static_cast<double>(elapsed.count());
+    current_stats.calculate_derived_stats();
+    
+    result.stats = current_stats;
+    result.time_expired = time_expired();
+    result.search_stopped = stop_flag.load(std::memory_order_relaxed);
+    
+    // Fallback logic: if search was stopped and no move was found, use first legal move
+    if (should_stop() && !result.best_move.is_valid()) {
+        MoveList legal_moves = move_gen->generate_legal_moves(const_cast<Board&>(board));
+        if (!legal_moves.empty()) {
+            result.best_move = legal_moves[0];
+        }
+    }
+    
+    return result;
+}
+
+int Search::alpha_beta(Board& board, int depth, int alpha, int beta, int ply, std::vector<Move>& pv) {
+    // Semantics:
+    //  - `depth` is the *remaining* search depth (in plies) allowed from this node.
+    //  - `ply` is the distance from the root (0 at root, increases by 1 going down).
+    //  - `pv` is the principal variation returned for this node (best_move + child's PV).
+    //
+    // Notes: we save entry_alpha/entry_beta (the window used at node entry) for
+    // transposition-table bound classification when storing.
+    //
+    // This function was refactored to avoid mutating the "entry window" when we decide
+    // TT bound type later, and to always return a coherent PV (if any move exists).
+
+    // *** CHECK STOP FLAG AT ENTRY ***
+    if (should_stop()) {
+        return evaluator->evaluate(board);
+    }
+    
+    // Initialize PV as empty - don't clear if already has valid content
+    // Only clear at the very end when we have the final best line
+    
+    // Update node count
+    current_stats.nodes_searched++;
+    
+    // Check for stop conditions
+    if (ply >= MAX_PLY) {
+        return evaluator->evaluate(board);
+    }
+    
+    // Check for draw by repetition or 50-move rule
+    if (board.get_halfmove_clock() >= 100) {
+        return 0; // Draw
+    }
+    
+    // Mate distance pruning
+    int mate_alpha = std::max(alpha, -MATE_SCORE + ply);
+    int mate_beta = std::min(beta, MATE_SCORE - ply - 1);
+    if (mate_alpha >= mate_beta) {
+        return mate_alpha;
+    }
+    alpha = mate_alpha;
+    beta = mate_beta;
+
+    // Save the entry window (after mate-distance adjust) for TT-bound classification later.
+    int entry_alpha = alpha;
+    int entry_beta  = beta;
+
+    // Transposition table lookup (use remaining 'depth' as passed)
     Move tt_move;
-    
-    if (tt_result.found) {
-        context.stats.tt_hits++;
-        tt_move = tt_result.move;
-        
-        // Use TT result if we can cutoff
-        if (tt_result.can_cutoff) {
-            return tt_result.score;
+    bool tt_hit = false;
+    if (config.enable_transposition_table) {
+        TTResult tt_result = tt->probe(board.get_zobrist_hash(), depth, alpha, beta, ply);
+        if (tt_result.found) {
+            current_stats.tt_hits++;
+            tt_move = tt_result.move;
+            tt_hit = true;
+            
+            if (tt_result.can_cutoff) {
+                current_stats.tt_cutoffs++;
+                return tt_result.score;
+            }
         }
     }
     
-    // Base case: depth reached or game over
-    if (depth == 0) {
-        int leaf_score = quiescence_search_with_context(context, alpha, beta, maximizing_player);
-        
-        // Store leaf evaluation in transposition table
-        Move empty_move; // No best move for leaf positions
-        TTBoundType leaf_bound = TTBoundType::EXACT; // Leaf evaluations are exact
-        transposition_table->store(zobrist_hash, empty_move, leaf_score, 0, ply, leaf_bound);
-        
-        return leaf_score;
+    // Terminal node check (depth 0 or leaf)
+    if (depth <= 0) {
+        // Clear PV for terminal nodes - no moves to add
+        pv.clear();
+        if (config.enable_quiescence_search) {
+            std::vector<Move> qsearch_pv;
+            int score = quiescence_search(board, alpha, beta, ply, qsearch_pv);
+            // Copy quiescence PV to main PV
+            pv = qsearch_pv;
+            return score;
+        }
+        return evaluator->evaluate(board);
+    }
+
+    // Generate moves
+    MoveList legal_moves = move_gen->generate_legal_moves(board);
+    if (legal_moves.empty()) {
+        // Clear PV for terminal nodes (checkmate/stalemate)
+        pv.clear();
+        // Checkmate or stalemate
+        if (move_gen->is_in_check(board, board.get_active_color())) {
+            return -MATE_SCORE + ply; // Checkmate
+        }
+        return 0; // Stalemate
     }
     
-    // Generate moves using instance method
-    MoveList moves = context.move_generator.generate_legal_moves(context.board);
+    // Convert to MoveScore vector for ordering
+    std::vector<MoveScore> moves;
+    moves.reserve(legal_moves.size());
+    for (const Move& move : legal_moves) {
+        moves.emplace_back(move);
+    }
     
-    // Check for checkmate or stalemate
-    if (moves.empty()) {
-        int terminal_score;
-        if (context.move_generator.is_in_check(context.board, context.board.get_active_color())) {
-            // Checkmate - return mate score adjusted by ply
-            terminal_score = maximizing_player ? -MATE_SCORE + ply : MATE_SCORE - ply;
-        } else {
-            // Stalemate
-            terminal_score = DRAW_SCORE;
+    // Order moves
+    order_moves(board, moves, ply, tt_move);
+    
+    // Null move pruning - only if we're not too deep
+    if (config.enable_null_move_pruning && can_do_null_move(board, depth, beta) && ply < MAX_PLY - 5) {
+        Board null_board = board;
+        null_board.set_active_color((null_board.get_active_color() == Board::WHITE) ? Board::BLACK : Board::WHITE);
+        
+        std::vector<Move> null_pv;
+        int null_score = -alpha_beta(null_board, depth - config.null_move_reduction - 1,
+                                     -beta, -beta + 1, ply + 1, null_pv);
+
+        if (should_stop()) {
+            return beta; // Return beta for null move cutoff
         }
         
-        // Store terminal position in transposition table
-        Move empty_move; // No best move for terminal positions
-        transposition_table->store(zobrist_hash, empty_move, terminal_score, depth, ply, TTBoundType::EXACT);
-        return terminal_score;
+        if (null_score >= beta) {
+            current_stats.null_move_cutoffs++;
+            return beta;
+        }
     }
     
-    // Order moves for better pruning (prioritize TT move)
-    order_moves_with_context(moves, context, ply, tt_move);
-    
-    int best_score = maximizing_player ? -INFINITY_SCORE : INFINITY_SCORE;
+    // Main search loop
+    int best_score = -MATE_SCORE;
     Move best_move;
-    TTBoundType bound_type = TTBoundType::UPPER_BOUND; // default if we never improved
+    bool found_pv = false;
+    int move_count = 0;
     
-    if (maximizing_player) {
-        bool did_cutoff = false;
-        for (const Move& move : moves) {
-            // Check for stop condition before each move
-            if (should_stop()) {
-                break;
-            }
-            
-            // Make move and get undo data
-            BitboardMoveUndoData undo_data = context.board.make_move(move);
-            
-            // Recursive search
-            int eval = minimax_with_context(context, depth - 1, alpha, beta, false, ply + 1);
-            
-            // Unmake move using undo data
-            context.board.undo_move(undo_data);
-            
-            if (eval > best_score) {
-                best_score = eval;
-                best_move = move;
-            }
-            
-            alpha = std::max(alpha, eval);
-            
-            // Beta cutoff
-            if (beta <= alpha) {
-                context.stats.beta_cutoffs++;
-                did_cutoff = true;
-                bound_type = TTBoundType::LOWER_BOUND; // beta cutoff => LOWER_BOUND
-                break;
-            }
+    for (const MoveScore& move_score : moves) {
+        if (should_stop()) {
+            return best_score > -MATE_SCORE ? best_score : alpha;
         }
-        if (!did_cutoff) bound_type = TTBoundType::EXACT;
         
-    } else {
-        bool did_cutoff = false;
-        for (const Move& move : moves) {
-            // Check for stop condition before each move
-            if (should_stop()) {
-                break;
-            }
-            
-            // Make move and get undo data
-            BitboardMoveUndoData undo_data = context.board.make_move(move);
-            
-            // Recursive search
-            int eval = minimax_with_context(context, depth - 1, alpha, beta, true, ply + 1);
-            
-            // Unmake move using undo data
-            context.board.undo_move(undo_data);
-            
-            if (eval < best_score) {
-                best_score = eval;
-                best_move = move;
-            }
-            
-            beta = std::min(beta, eval);
-            
-            // Alpha cutoff
-            if (beta <= alpha) {
-                context.stats.beta_cutoffs++;
-                did_cutoff = true;
-                bound_type = TTBoundType::UPPER_BOUND; // alpha cutoff in minimizing => UPPER_BOUND
-                break;
+        const Move& move = move_score.move;
+        BitboardMoveUndoData undo_data = board.make_move(move);
+        move_count++;
+        
+        // Calculate extensions
+        int extensions = 0;
+        if (config.enable_check_extensions || config.enable_singular_extensions || config.enable_recapture_extensions) {
+            if (ply < MAX_PLY - 10) {
+                extensions = calculate_extensions(board, move, ply, 0);
             }
         }
-        if (!did_cutoff) bound_type = TTBoundType::EXACT;
+        
+        // Calculate reductions
+        int reduction = 0;
+        if (config.enable_late_move_reductions && move_count > config.lmr_full_depth_moves &&
+            depth > 2 && !move.is_capture() && !move.is_promotion() &&
+            !move_gen->is_in_check(board, board.get_active_color())) {
+            reduction = calculate_lmr_reduction(depth, move_count, move, found_pv);
+            // Add extra reduction if we're getting deep to prevent stack overflow
+            if (ply > MAX_PLY / 2) {
+                reduction += 1;
+            }
+        }
+        
+        int new_depth = depth - 1 + extensions - reduction;
+        if (ply + 1 >= MAX_PLY) {
+            new_depth = 0; // Force evaluation at next level
+        }
+        std::vector<Move> current_line;
+        int score;
+        
+        // Principal Variation Search (PVS)
+        if (move_count == 1) {
+            score = -alpha_beta(board, new_depth, -beta, -alpha, ply + 1, current_line);
+
+            if (should_stop()) {
+                board.undo_move(undo_data);
+                return best_score > -MATE_SCORE ? best_score : entry_alpha;
+            }
+        } else {
+            // Late moves - search with null window first
+            score = -alpha_beta(board, new_depth, -alpha - 1, -alpha, ply + 1, current_line);
+
+            if (should_stop()) {
+                board.undo_move(undo_data);
+                return best_score > -MATE_SCORE ? best_score : entry_alpha;
+            }
+            
+            // If it beats alpha, re-search with full window
+            if (score > alpha && score < beta) {
+                current_line.clear();
+                score = -alpha_beta(board, new_depth, -beta, -alpha, ply + 1, current_line);
+
+                if (should_stop()) {
+                    board.undo_move(undo_data);
+                    return best_score > -MATE_SCORE ? best_score : entry_alpha;
+                }
+            }
+        }
+        
+        // Undo move
+        board.undo_move(undo_data);
+        
+        // Update best score and move
+        if (score > best_score) {
+            best_score = score;
+            best_move = move;
+        }
+
+        // Update alpha and PV if we improved alpha (found new principal variation)
+        if (score > alpha) {
+            alpha = score;
+            found_pv = true;
+            current_stats.alpha_improvements++;
+            
+            // Construct PV: current move + child's PV
+            pv.clear();
+            pv.push_back(move);
+            pv.insert(pv.end(), current_line.begin(), current_line.end());
+
+            // Beta cutoff actions
+            if (alpha >= beta) {
+                current_stats.beta_cutoffs++;
+
+                if (!move.is_capture()) {
+                    if (config.enable_killer_moves) killer_moves.add_killer(ply, move);
+                    if (config.enable_history_heuristic) history_table.update(move, depth);
+                }
+
+                break; // beta cutoff
+            }
+        }
+    } // end moves loop
+
+    // If no PV was set (no alpha improvement), but we have a best move, 
+    // search it again to get a proper PV line
+    if (!found_pv && best_move.from_rank != -1) {
+        pv.clear();
+        pv.push_back(best_move);
+        
+        // Try to get a deeper PV by searching the best move again
+        if (depth > 1) {
+            BitboardMoveUndoData undo_data = board.make_move(best_move);
+            std::vector<Move> deeper_pv;
+            
+            // Search with a null window to get the PV
+            alpha_beta(board, depth - 1, -beta, -alpha, ply + 1, deeper_pv);
+            
+            board.undo_move(undo_data);
+            
+            // Append the deeper PV to our current PV
+            pv.insert(pv.end(), deeper_pv.begin(), deeper_pv.end());
+        }
     }
-    
-    // Store in transposition table
-    if (best_move.is_valid()) {
-        transposition_table->store(zobrist_hash, best_move, best_score, depth, ply, bound_type);
+
+    // Store in transposition table using the *entry* window saved earlier
+    if (config.enable_transposition_table && !should_stop()) {
+        TTBoundType bound_type;
+        if (best_score <= entry_alpha) {
+            bound_type = TTBoundType::UPPER_BOUND;
+        } else if (best_score >= entry_beta) {
+            bound_type = TTBoundType::LOWER_BOUND;
+        } else {
+            bound_type = TTBoundType::EXACT;
+        }
+        
+        tt->store(board.get_zobrist_hash(), best_move, best_score, depth, ply, bound_type);
     }
     
     return best_score;
 }
 
-// Quiescence search with context support
-int Search::quiescence_search_with_context(SearchContext& context, int alpha, int beta, bool maximizing_player, int qs_depth) {
-    // Limit quiescence depth to prevent infinite search
-    if (qs_depth >= MAX_QUIESCENCE_DEPTH) {
-        return evaluator->evaluate(context.board);
-    }
-    
-    context.stats.quiescence_nodes++;
-    
-    // Check for time limit periodically in quiescence search
-    if ((context.stats.quiescence_nodes % 1000) == 0 && should_stop()) {
-        return maximizing_player ? alpha : beta;
-    }
-    
-    // Stand pat evaluation
-    int stand_pat = evaluator->evaluate(context.board);
-    
-    if (maximizing_player) {
-        if (stand_pat >= beta) {
-            return beta;
-        }
-        alpha = std::max(alpha, stand_pat);
-    } else {
-        if (stand_pat <= alpha) {
-            return alpha;
-        }
-        beta = std::min(beta, stand_pat);
-    }
-    
-    // Generate only capture moves for quiescence using instance method
-    MoveList captures = context.move_generator.generate_captures(context.board);
-    
-    for (const Move& move : captures) {
-        // Check for stop condition
-        if (should_stop()) {
-            break;
-        }
-        
-        // Make move and get undo data
-        BitboardMoveUndoData undo_data = context.board.make_move(move);
-        
-        // Recursive quiescence search
-        int eval = quiescence_search_with_context(context, alpha, beta, !maximizing_player, qs_depth + 1);
-        
-        // Unmake move using undo data
-        context.board.undo_move(undo_data);
-        
-        if (maximizing_player) {
-            alpha = std::max(alpha, eval);
-            if (beta <= alpha) {
-                break;
-            }
-        } else {
-            beta = std::min(beta, eval);
-            if (beta <= alpha) {
-                break;
-            }
-        }
-    }
-    
-    return maximizing_player ? alpha : beta;
-}
 
-// Iterative deepening search
-void Search::iterative_deepening(Board& board, int max_depth, SearchResult& result) {
-    // Start new search - advance TT age
-    transposition_table->new_search();
-    
-    SearchContext context(board);
-    Move fallback_move;
-    Move best_evaluated_move; // Track the best move that was actually evaluated
-    bool has_fallback_move = false;
-    bool has_evaluated_move = false;
-    int best_evaluated_score = -INFINITY_SCORE;
-    int best_completed_depth = 0;
-    
-    // Generate legal moves
-    MoveList legal_moves = context.move_generator.generate_legal_moves(context.board);
-    if (legal_moves.empty()) {
-        return; // No legal moves
-    }
-    
-    // Use first legal move as fallback
-    fallback_move = legal_moves[0];
-    has_fallback_move = true;
-    
-    // Initialize move scores
-    std::vector<MoveScore> move_scores;
-    move_scores.reserve(legal_moves.size());
-    for (const Move& move : legal_moves) {
-        move_scores.emplace_back(move);
-    }
-    
-    // Initialize combined statistics
-    SearchStats combined_stats;
-    
-    // Iterative deepening loop
-    for (int depth = 1; depth <= max_depth && !should_stop(); depth++) {
-        // Reset evaluation flags for this depth
-        for (auto& ms : move_scores) {
-            ms.evaluated = false;
-            ms.score = -INFINITY_SCORE;
-        }
-        
-        // Clear stats for this depth
-        context.stats.clear();
-        
-        // Parallelize move evaluation at root
-        SearchStats depth_stats;
-        parallel_evaluate_moves(context.board, move_scores, depth, &depth_stats);
-        
-        // Debug output
-        std::cout << "Depth " << depth
-                  << ": nodes=" << depth_stats.nodes_searched
-                  << ", tt_hits=" << depth_stats.tt_hits
-                  << ", tt_hit_rate=" << (depth_stats.nodes_searched > 0 ?
-                      (100.0 * depth_stats.tt_hits / depth_stats.nodes_searched) : 0.0)
-                  << "%" << std::endl;
-        
-        // Accumulate statistics from this depth
-        combined_stats.nodes_searched += depth_stats.nodes_searched;
-        combined_stats.quiescence_nodes += depth_stats.quiescence_nodes;
-        combined_stats.tt_hits += depth_stats.tt_hits;
-        combined_stats.beta_cutoffs += depth_stats.beta_cutoffs;
-        combined_stats.null_move_cutoffs += depth_stats.null_move_cutoffs;
-        combined_stats.lmr_reductions += depth_stats.lmr_reductions;
-        
-        // Check if search was stopped during evaluation
-        bool depth_completed = !should_stop();
-        
-        // Find best move from evaluated moves at this depth
-        auto best_it = std::max_element(move_scores.begin(), move_scores.end(),
-            [](const MoveScore& a, const MoveScore& b) {
-                if (!a.evaluated) return true;
-                if (!b.evaluated) return false;
-                return a.score < b.score;
-            });
-        
-        // If we have at least one evaluated move at this depth
-        if (best_it != move_scores.end() && best_it->evaluated) {
-            // If this depth completed successfully, update our best result
-            if (depth_completed) {
-                best_evaluated_move = best_it->move;
-                best_evaluated_score = best_it->score;
-                best_completed_depth = depth;
-                has_evaluated_move = true;
-                
-                // Update result with completed depth
-                result.best_move = best_evaluated_move;
-                result.score = best_evaluated_score;
-                result.depth = depth;
-                
-                // Debug output: Display best move for this depth
-                // std::cout << "Depth " << depth << ": Best move = " 
-                //          << best_evaluated_move.to_algebraic() 
-                //          << " (score: " << best_evaluated_score << ")" << std::endl;
-                
-                // Sort moves for next iteration (best move first)
-                std::sort(move_scores.begin(), move_scores.end(),
-                    [](const MoveScore& a, const MoveScore& b) {
-                        if (!a.evaluated && !b.evaluated) return false;
-                        if (!a.evaluated) return false;
-                        if (!b.evaluated) return true;
-                        return a.score > b.score;
-                    });
-            }
-            // If depth was interrupted but we have some evaluated moves,
-            // we keep the previous best result and don't update it
-        }
-        
-        // If search was stopped, break out of the loop
-        if (should_stop()) {
-            break;
-        }
-    }
-    
-    // Final move selection logic:
-    // 1. If we have a completed evaluated move, use it (already set in result)
-    // 2. If we don't have any evaluated moves, fall back to first legal move
-    if (!has_evaluated_move && has_fallback_move) {
-        result.best_move = fallback_move;
-        result.score = 0; // Unknown score
-        result.depth = 0; // No depth completed
-    }
-    
-    // Copy accumulated statistics
-    result.stats = combined_stats;
-}
 
-// Move ordering with context
-void Search::order_moves_with_context(MoveList& moves, SearchContext& context, int ply, const Move& tt_move) {
-    // Check time limit before expensive sorting operation
-    if (should_stop()) {
-        return;
-    }
-    
-    // Simple move ordering: captures first, then quiet moves
-    std::sort(moves.begin(), moves.end(), [&](const Move& a, const Move& b) {
-        return evaluate_move_priority_with_context(a, context, ply, tt_move) > 
-               evaluate_move_priority_with_context(b, context, ply, tt_move);
-    });
-}
+// Timer implementation functions
 
-// Evaluate move priority with context
-int Search::evaluate_move_priority_with_context(const Move& move, const SearchContext& context, int ply, const Move& tt_move) {
-    int priority = 0;
-    
-    // Transposition table move gets highest priority
-    if (move == tt_move) {
-        priority += 10000;
-    }
-    
-    // Captures get high priority
-    if (move.is_capture()) {
-        priority += 1000;
-        // MVV-LVA: Most Valuable Victim - Least Valuable Attacker
-        priority += get_piece_value(move.captured_piece) - get_piece_value(move.piece);
-    }
-    
-    // Promotions get high priority
-    if (move.is_promotion()) {
-        priority += 900;
-    }
-    
-    // Killer moves get medium priority
-    for (int i = 0; i < KILLER_MOVES_PER_PLY; i++) {
-        if (ply < MAX_DEPTH && move == context.killer_moves[i][ply]) {
-            priority += 500 - i * 100;
-            break;
-        }
-    }
-    
-    return priority;
-}
-
-// Helper function to get piece value for move ordering
-int Search::get_piece_value(char piece) const {
-    switch (std::tolower(piece)) {
-        case 'p': return 100;
-        case 'n': return 300;
-        case 'b': return 300;
-        case 'r': return 500;
-        case 'q': return 900;
-        case 'k': return 10000;
-        default: return 0;
-    }
-}
-
-//TODO: Remove duplicate backup move in all the search functions (the backup already exists in iterative_deepening)
-
-//TODO: Remove the undo move where possible (if each thread has its own board copy there is no need to undo)
-
-//TODO: Investigate search at depth 1 and transposition table hits at depth 1
-
-// 1. Search move without time limit
-Move Search::search_move(Board& board, int max_depth) {
-    // Reset stop flag
-    stop_flag.store(false, std::memory_order_release);
-    search_active.store(true, std::memory_order_release);
-    
-    SearchResult result;
-    result.best_move = Move(); // Invalid move initially
-    
-    try {
-        iterative_deepening(board, max_depth, result);
-    } catch (...) {
-        // Ensure we always return a valid move
-        // Clear transposition table even if search was interrupted
-        transposition_table->clear();
-    }
-    
-    search_active.store(false, std::memory_order_release);
-    
-    // Clear transposition table after search completion
-    transposition_table->clear();
-    
-    // If no move found, return first legal move as fallback
-    if (!result.best_move.is_valid()) {
-        MoveGenerator gen;
-        MoveList legal_moves = gen.generate_legal_moves(board);
-        if (!legal_moves.empty()) {
-            result.best_move = legal_moves[0];
-        }
-    }
-    
-    return result.best_move;
-}
-
-// 2. Search move with time limit - STRICT TIME ENFORCEMENT
-Move Search::search_move(Board& board, std::chrono::milliseconds time_limit, int max_depth) {
-    // Reset stop flag and set up global timer
-    stop_flag.store(false, std::memory_order_release);
-    search_active.store(true, std::memory_order_release);
-    
-    // Set up global timer system
-    search_start_time.store(std::chrono::steady_clock::now(), std::memory_order_release);
-    time_limit_ms.store(time_limit, std::memory_order_release);
-    time_limit_active.store(true, std::memory_order_release);
-    
-    SearchResult result;
-    result.best_move = Move(); // Invalid move initially
-    
-    // Get a fallback move immediately
-    MoveGenerator gen;
-    MoveList legal_moves = gen.generate_legal_moves(board);
-    if (!legal_moves.empty()) {
-        result.best_move = legal_moves[0]; // Fallback move
-    }
-    
-    try {
-        iterative_deepening(board, max_depth, result);
-    } catch (...) {
-        // Ensure we always return a valid move
-        // Clear transposition table even if search was interrupted
-        transposition_table->clear();
-    }
-    
-    // Disable global timer
-    time_limit_active.store(false, std::memory_order_release);
-    search_active.store(false, std::memory_order_release);
-    
-    // Clear transposition table after search completion
-    transposition_table->clear();
-    
-    // Calculate elapsed time
-    auto end_time = std::chrono::steady_clock::now();
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - search_start_time.load());
-    result.time_elapsed = elapsed;
-    
-    return result.best_move;
-}
-
-// 3. Search with full result without time limit
-SearchResult Search::search(Board& board, int max_depth) {
-    // Reset stop flag
-    stop_flag.store(false, std::memory_order_release);
-    search_active.store(true, std::memory_order_release);
+void Search::timer_worker(std::chrono::milliseconds time_limit) {
+    std::unique_lock<std::mutex> lock(timer_mutex);
     
     auto start_time = std::chrono::steady_clock::now();
+    auto end_time = start_time + time_limit;
     
-    SearchResult result;
-    result.best_move = Move(); // Invalid move initially
+    // Display interval (every 500ms)
+    const auto display_interval = std::chrono::milliseconds(500);
+    auto next_display = start_time + display_interval;
     
-    try {
-        iterative_deepening(board, max_depth, result);
-    } catch (...) {
-        // Ensure we always return a valid move
-        // Clear transposition table even if search was interrupted
-        transposition_table->clear();
-    }
-    
-    search_active.store(false, std::memory_order_release);
-    
-    // Clear transposition table after search completion
-    transposition_table->clear();
-    
-    // If no move found, return first legal move as fallback
-    if (!result.best_move.is_valid()) {
-        MoveGenerator gen;
-        MoveList legal_moves = gen.generate_legal_moves(board);
-        if (!legal_moves.empty()) {
-            result.best_move = legal_moves[0];
+    while (true) {
+        auto now = std::chrono::steady_clock::now();
+        
+        // Check if we should exit early
+        if (timer_should_exit.load(std::memory_order_relaxed)) {
+            return; // Exit early
         }
-    }
-    
-    // Calculate elapsed time
-    auto end_time = std::chrono::steady_clock::now();
-    result.time_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
-    
-    return result;
-}
-
-// 4. Search with full result and time limit - STRICT TIME ENFORCEMENT
-SearchResult Search::search(Board& board, std::chrono::milliseconds time_limit, int max_depth) {
-    // Reset stop flag and set up global timer
-    stop_flag.store(false, std::memory_order_release);
-    search_active.store(true, std::memory_order_release);
-    
-    // Set up global timer system
-    search_start_time.store(std::chrono::steady_clock::now(), std::memory_order_release);
-    time_limit_ms.store(time_limit, std::memory_order_release);
-    time_limit_active.store(true, std::memory_order_release);
-    
-    SearchResult result;
-    result.best_move = Move(); // Invalid move initially
-    
-    // Get a fallback move immediately
-    MoveGenerator gen;
-    MoveList legal_moves = gen.generate_legal_moves(board);
-    if (!legal_moves.empty()) {
-        result.best_move = legal_moves[0]; // Fallback move
-    }
-    
-    try {
-        iterative_deepening(board, max_depth, result);
-    } catch (...) {
-        // Ensure we always return a valid move
-        // Clear transposition table even if search was interrupted
-        transposition_table->clear();
-    }
-    
-    // Disable global timer
-    time_limit_active.store(false, std::memory_order_release);
-    search_active.store(false, std::memory_order_release);
-    
-    // Clear transposition table after search completion
-    transposition_table->clear();
-    
-    // Calculate elapsed time
-    auto end_time = std::chrono::steady_clock::now();
-    result.time_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - search_start_time.load());
-    
-    return result;
-}
-
-// TODO: Use the proper vector (SmallVector) instead of std::vector for better performance
-
-// New function: Parallel move evaluation at root
-void Search::parallel_evaluate_moves(Board& board, std::vector<MoveScore>& move_scores, int depth, SearchStats* out_stats) {
-    const int num_moves = static_cast<int>(move_scores.size());
-    const int num_threads = std::min(thread_count, num_moves);
-    
-    if (num_threads <= 1 || num_moves == 1) {
-        // Single-threaded fallback
-        sequential_evaluate_moves(board, move_scores, depth, out_stats);
-        return;
-    }
-    
-    // Shared mutex for accessing move_scores and accumulating stats
-    std::mutex scores_mutex;
-    
-    // Atomic counter for work distribution
-    std::atomic<int> next_move_index(0);
-    
-    // Shared statistics accumulator
-    SearchStats combined_stats;
-    
-    // Launch worker threads
-    std::vector<std::thread> threads;
-    threads.reserve(num_threads);
-    
-    for (int t = 0; t < num_threads; t++) {
-        threads.emplace_back([&, t]() {
-            // Each thread gets its own board copy and context
-            Board thread_board = board;
-            SearchContext thread_context(thread_board);
-            
-            // DON'T clear stats here - accumulate across all moves this thread evaluates
-            
-            while (!should_stop()) {
-                // Check time limit before getting next move
-                if (should_stop()) {
-                    break;
-                }
-                
-                // Get next move to evaluate
-                int move_idx = next_move_index.fetch_add(1, std::memory_order_relaxed);
-                
-                if (move_idx >= num_moves) {
-                    break; // No more moves to evaluate
-                }
-                
-                // Check time limit before evaluating move
-                if (should_stop()) {
-                    break;
-                }
-                
-                const Move& move = move_scores[move_idx].move;
-                
-                // DON'T clear stats for each move - we want cumulative stats
-                // thread_context.stats.clear();  // <-- REMOVED THIS LINE
-                
-                // Make move
-                BitboardMoveUndoData undo_data = thread_board.make_move(move);
-                
-                // Evaluate this move
-                int score = -minimax_with_context(thread_context, depth - 1, 
-                                                  -INFINITY_SCORE, INFINITY_SCORE, 
-                                                  false, 1);
-                
-                // Unmake move
-                thread_board.undo_move(undo_data);
-                
-                // Store result (thread-safe) - check time limit one more time
-                if (!should_stop()) {
-                    std::lock_guard<std::mutex> lock(scores_mutex);
-                    move_scores[move_idx].score = score;
-                    move_scores[move_idx].evaluated = true;
-                }
-            }
-            
-            // Accumulate this thread's total stats at the end
-            {
-                std::lock_guard<std::mutex> lock(scores_mutex);
-                combined_stats.nodes_searched += thread_context.stats.nodes_searched;
-                combined_stats.quiescence_nodes += thread_context.stats.quiescence_nodes;
-                combined_stats.tt_hits += thread_context.stats.tt_hits;
-                combined_stats.beta_cutoffs += thread_context.stats.beta_cutoffs;
-                combined_stats.null_move_cutoffs += thread_context.stats.null_move_cutoffs;
-                combined_stats.lmr_reductions += thread_context.stats.lmr_reductions;
-            }
-        });
-    }
-    
-    // Wait for all threads to complete
-    for (auto& thread : threads) {
-        if (thread.joinable()) {
-            thread.join();
+        
+        // Check if time has expired
+        if (now >= end_time) {
+            stop_flag.store(true, std::memory_order_relaxed);  // Stop the search
         }
-    }
-    
-    // Return accumulated statistics if requested
-    if (out_stats) {
-        *out_stats = combined_stats;
-    }
-}
-
-//TODO: Investigate, this function seems to return different moves than the parallel version at the same exact depth
-
-// Sequential fallback for single-threaded evaluation
-void Search::sequential_evaluate_moves(Board& board, std::vector<MoveScore>& move_scores, int depth, SearchStats* out_stats) {
-    SearchContext context(board);
-    SearchStats accumulated_stats;
-    
-    for (auto& ms : move_scores) {
         if (should_stop()) {
-            break;
+            std::cout << "Time expired!" << std::endl;
+            return;
+        }
+
+        
+        // Display remaining time if it's time to do so
+        if (now >= next_display) {
+            auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - now);
+            double remaining_seconds = static_cast<double>(remaining.count()) / 1000.0;
+            std::cout << "Time remaining: " << std::fixed << std::setprecision(1) 
+                      << remaining_seconds << "s" << std::endl;
+            next_display = now + display_interval;
         }
         
-        const Move& move = ms.move;
+        // Wait for a short interval or until signaled to exit
+        auto wait_until = std::min(next_display, end_time);
+        auto wait_duration = std::chrono::duration_cast<std::chrono::milliseconds>(wait_until - now);
+
+        if (wait_duration > std::chrono::milliseconds(0)) {
+            bool exit_early = timer_cv.wait_for(lock, wait_duration, [this] {
+                return timer_should_exit.load(std::memory_order_relaxed);
+            });
+            
+            if (exit_early) {
+                return; // Exit early
+            }
+        }
+    }
+}
+
+void Search::start_timer(std::chrono::milliseconds time_limit) {
+    if (time_limit.count() <= 0) {
+        return; // No time limit, don't start timer
+    }
+    
+    // Stop any existing timer first
+    stop_timer();
+    
+    // Reset exit flag
+    timer_should_exit = false;
+    
+    // Launch timer thread
+    timer_thread = std::make_unique<std::thread>(&Search::timer_worker, this, time_limit);
+}
+
+void Search::stop_timer() {
+    if (timer_thread && timer_thread->joinable()) {
+        // Signal timer to exit
+        {
+            std::unique_lock<std::mutex> lock(timer_mutex);
+            timer_should_exit = true;
+        }
+        timer_cv.notify_all();
         
-        // DON'T clear stats for each move
-        // context.stats.clear();  // <-- REMOVED THIS LINE
+        // Wait for timer thread to finish
+        timer_thread->join();
+        timer_thread.reset();
+    }
+}
+
+int Search::quiescence_search(Board& board, int alpha, int beta, int ply, std::vector<Move>& pv) {
+    // *** CHECK STOP FLAG AT ENTRY ***
+    if (should_stop()) {
+        pv.clear();
+        return evaluator->evaluate(board);
+    }
+    
+    current_stats.qnodes_searched++;
+    // Use separate limit for quiescence search to prevent deep tactical searches
+    if (ply >= MAX_PLY || ply >= MAX_QUIESCENCE_PLY) {
+        pv.clear();
+        return evaluator->evaluate(board);
+    }
+    
+    // Initialize PV as empty
+    pv.clear();
+    
+    // Stand pat evaluation
+    int stand_pat = evaluator->evaluate(board);
+    
+    // Beta cutoff on stand pat
+    if (stand_pat >= beta) {
+        return beta;
+    }
+    
+    // Update alpha
+    if (stand_pat > alpha) {
+        alpha = stand_pat;
+    }
+    
+    // Generate captures and checks
+    MoveList captures;
+    if (move_gen->is_in_check(board, board.get_active_color())) {
+        // In check - must search all legal moves
+        captures = move_gen->generate_legal_moves(board);
+    } else {
+        // Not in check - only search captures and promotions
+        captures = move_gen->generate_captures(board);
+        MoveList promotions = move_gen->generate_tactical_moves(board);
+        captures.insert(captures.end(), promotions.begin(), promotions.end());
+    }
+    
+    // Convert to MoveScore vector and order
+    std::vector<MoveScore> moves;
+    moves.reserve(captures.size());
+    for (const Move& move : captures) {
+        moves.emplace_back(move);
+    }
+    
+    // Simple ordering for quiescence (MVV-LVA)
+    std::sort(moves.begin(), moves.end(), [this](const MoveScore& a, const MoveScore& b) {
+        return calculate_mvv_lva_score(a.move) > calculate_mvv_lva_score(b.move);
+    });
+    
+    // Search captures
+    for (const MoveScore& move_score : moves) {
+        // *** PERIODIC STOP CHECK IN MOVE LOOP ***
+        if (should_stop()) {
+            return alpha;
+        }
+        
+        const Move& move = move_score.move;
+        
+        // Delta pruning - skip obviously bad captures
+        if (!move_gen->is_in_check(board, board.get_active_color()) && move.is_capture()) {
+            Board::PieceType captured_type = Board::char_to_piece_type(move.captured_piece);
+            int captured_value = MATERIAL_VALUES[captured_type];
+            if (stand_pat + captured_value + 200 < alpha) {
+                continue; // Delta pruning
+            }
+        }
+        
+        // SEE pruning - skip losing captures
+        if (config.enable_see_ordering && move.is_capture()) {
+            int see_score = calculate_see_score(board, move);
+            if (see_score < 0) {
+                continue; // Losing capture
+            }
+        }
         
         // Make move
-        BitboardMoveUndoData undo_data = context.board.make_move(move);
+        BitboardMoveUndoData undo_data = board.make_move(move);
         
-        // Evaluate this move
-        int score = -minimax_with_context(context, depth - 1, 
-                                          -INFINITY_SCORE, INFINITY_SCORE, 
-                                          false, 1);
+        // Recursive quiescence search
+        std::vector<Move> child_pv;
+        int score = -quiescence_search(board, -beta, -alpha, ply + 1, child_pv);
         
-        // Unmake move
-        context.board.undo_move(undo_data);
+        // *** IMMEDIATE STOP CHECK AFTER RECURSIVE CALL ***
+        if (should_stop()) {
+            board.undo_move(undo_data);
+            return alpha;
+        }
         
-        // Store result
-        ms.score = score;
-        ms.evaluated = true;
+        // Undo move
+        board.undo_move(undo_data);
+        
+        // Update alpha and PV
+        if (score > alpha) {
+            alpha = score;
+            
+            // Construct PV: current move + child's PV
+            pv.clear();
+            pv.push_back(move);
+            pv.insert(pv.end(), child_pv.begin(), child_pv.end());
+            
+            // Beta cutoff
+            if (alpha >= beta) {
+                return beta;
+            }
+        }
     }
     
-    // Accumulate all stats at once
-    if (out_stats) {
-        *out_stats = context.stats;
-    }
+    return alpha;
 }
 
-// Optional: Aspiration window search for better move ordering
-void Search::parallel_evaluate_moves_with_aspiration(Board& board, 
-                                                      std::vector<MoveScore>& move_scores, 
-                                                      int depth, 
-                                                      int prev_score) {
-    // First, try with narrow aspiration window
-    const int window = 50; // Centipawns
+int Search::aspiration_search(Board& board, int depth, int prev_score, std::vector<Move>& pv) {
+    // *** CHECK STOP FLAG AT ENTRY ***
+    if (should_stop()) {
+        return evaluator->evaluate(board);
+    }
+    
+    int window = config.aspiration_window_size;
     int alpha = prev_score - window;
     int beta = prev_score + window;
     
-    parallel_evaluate_moves_windowed(board, move_scores, depth, alpha, beta);
-    
-    // Check if any move failed high or low
-    bool need_research = false;
-    for (const auto& ms : move_scores) {
-        if (ms.evaluated && (ms.score <= alpha || ms.score >= beta)) {
-            need_research = true;
-            break;
-        }
-    }
-    
-    // Re-search with full window if needed
-    if (need_research && !should_stop()) {
-        // Check time limit before expensive re-search
+    while (true) {
+        // *** CHECK STOP FLAG IN LOOP ***
         if (should_stop()) {
-            return;
+            return evaluator->evaluate(board);
         }
         
-        for (auto& ms : move_scores) {
-            ms.evaluated = false;
+        std::vector<Move> current_pv;
+        int score = alpha_beta(board, depth, alpha, beta, 0, current_pv);
+        
+        // *** IMMEDIATE STOP CHECK AFTER RECURSIVE CALL ***
+        if (should_stop()) {
+            return evaluator->evaluate(board);
         }
-        SearchStats depth_stats;
-        parallel_evaluate_moves(board, move_scores, depth, &depth_stats);
+        
+        if (score <= alpha) {
+            // Fail low - widen alpha
+            alpha = std::max(alpha - window, -MATE_SCORE);
+            window *= 2;
+        } else if (score >= beta) {
+            // Fail high - widen beta
+            beta = std::min(beta + window, MATE_SCORE);
+            window *= 2;
+        } else {
+            // Success - score is within window
+            pv = current_pv;
+            return score;
+        }
+        
+        // Prevent infinite widening
+        if (window > config.aspiration_window_max) {
+            alpha = -MATE_SCORE;
+            beta = MATE_SCORE;
+        }
     }
 }
 
-// Parallel evaluation with alpha-beta window
-void Search::parallel_evaluate_moves_windowed(Board& board, 
-                                               std::vector<MoveScore>& move_scores, 
-                                               int depth, 
-                                               int alpha, 
-                                               int beta) {
-    const int num_moves = static_cast<int>(move_scores.size());
-    const int num_threads = std::min(thread_count, num_moves);
-    
-    if (num_threads <= 1 || num_moves == 1) {
-        sequential_evaluate_moves_windowed(board, move_scores, depth, alpha, beta);
-        return;
-    }
-    
-    std::mutex scores_mutex;
-    std::atomic<int> next_move_index(0);
-    std::atomic<int> shared_alpha(alpha);
-    
-    std::vector<std::thread> threads;
-    threads.reserve(num_threads);
-    
-    for (int t = 0; t < num_threads; t++) {
-        threads.emplace_back([&]() {
-            Board thread_board = board;
-            SearchContext thread_context(thread_board);
+void Search::order_moves(const Board& board, std::vector<MoveScore>& moves, 
+                        int ply, const Move& tt_move) {
+    // Score all moves
+    for (MoveScore& move_score : moves) {
+        const Move& move = move_score.move;
+        int score = 0;
+        
+        // Hash move gets highest priority
+        if (move == tt_move) {
+            score = 1000000;
+        }
+        // Captures
+        else if (move.is_capture()) {
+            score = 100000 + calculate_mvv_lva_score(move);
             
-            while (!should_stop()) {
-                int move_idx = next_move_index.fetch_add(1, std::memory_order_relaxed);
-                
-                if (move_idx >= num_moves) {
-                    break;
-                }
-                
-                // Check time limit before evaluating move
-                if (should_stop()) {
-                    break;
-                }
-                
-                const Move& move = move_scores[move_idx].move;
-                
-                // Get current alpha value
-                int current_alpha = shared_alpha.load(std::memory_order_relaxed);
-                
-                // Make move
-                BitboardMoveUndoData undo_data = thread_board.make_move(move);
-                
-                // Evaluate with current window
-                int score = -minimax_with_context(thread_context, depth - 1, 
-                                                  -beta, -current_alpha, 
-                                                  false, 1);
-                
-                // Unmake move
-                thread_board.undo_move(undo_data);
-                
-                if (!should_stop()) {
-                    std::lock_guard<std::mutex> lock(scores_mutex);
-                    move_scores[move_idx].score = score;
-                    move_scores[move_idx].evaluated = true;
-                    
-                    // Update shared alpha if we found a better move
-                    if (score > current_alpha) {
-                        int expected = current_alpha;
-                        while (score > expected && 
-                               !shared_alpha.compare_exchange_weak(expected, score, 
-                                                                   std::memory_order_relaxed)) {
-                            // Keep trying to update if another thread hasn't set a higher value
-                        }
-                    }
-                }
+            // SEE adjustment
+            if (config.enable_see_ordering) {
+                int see_score = calculate_see_score(board, move);
+                score += see_score;
             }
-        });
+        }
+        // Promotions
+        else if (move.is_promotion()) {
+            Board::PieceType promotion_type = Board::char_to_piece_type(move.promotion_piece);
+            score = 90000 + static_cast<int>(promotion_type) * 1000;
+        }
+        // Killer moves
+        else if (config.enable_killer_moves && killer_moves.is_killer(ply, move)) {
+            score = 80000;
+        }
+        // History heuristic
+        else if (config.enable_history_heuristic) {
+            score = history_table.get_score(move);
+        }
+        
+        move_score.score = score;
+        move_score.evaluated = true;
     }
     
-    for (auto& thread : threads) {
-        if (thread.joinable()) {
-            thread.join();
-        }
-    }
+    // Sort moves by score (highest first)
+    std::sort(moves.begin(), moves.end());
 }
 
-// Sequential windowed evaluation
-void Search::sequential_evaluate_moves_windowed(Board& board, 
-                                                 std::vector<MoveScore>& move_scores, 
-                                                 int depth, 
-                                                 int alpha, 
-                                                 int beta) {
-    SearchContext context(board);
+int Search::calculate_mvv_lva_score(const Move& move) const {
+    if (!move.is_capture()) {
+        return 0;
+    }
     
-    for (auto& ms : move_scores) {
+    // MVV-LVA: Most Valuable Victim - Least Valuable Attacker
+    Board::PieceType victim_type = Board::char_to_piece_type(move.captured_piece);
+    Board::PieceType attacker_type = Board::char_to_piece_type(move.piece);
+    
+    int victim_value = MATERIAL_VALUES[victim_type];
+    int attacker_value = MATERIAL_VALUES[attacker_type];
+    
+    return victim_value * 100 - attacker_value;
+}
+
+int Search::calculate_see_score(const Board& board, const Move& move) const {
+    // Simplified SEE implementation
+    if (!move.is_capture()) {
+        return 0;
+    }
+    
+    Board::PieceType victim_type = Board::char_to_piece_type(move.captured_piece);
+    Board::PieceType attacker_type = Board::char_to_piece_type(move.piece);
+    
+    // Use material values directly from the evaluation constants
+    static constexpr int MATERIAL_VALUES[6] = {
+        100,  // PAWN
+        325,  // KNIGHT
+        335,  // BISHOP
+        500,  // ROOK
+        975,  // QUEEN
+        20000 // KING
+    };
+    
+    int gain = MATERIAL_VALUES[victim_type];
+    int risk = MATERIAL_VALUES[attacker_type];
+    
+    // Simple heuristic: if we're capturing with a less valuable piece, it's good
+    return gain - risk;
+}
+
+int Search::calculate_extensions(const Board& board, const Move& move, int ply, int extensions_used) {
+    if (extensions_used >= config.max_extensions_per_path) {
+        return 0;
+    }
+    
+    int extension = 0;
+    
+    // Check extension
+    if (config.enable_check_extensions && move_gen->is_in_check(board, board.get_active_color())) {
+        extension = 1;
+        current_stats.check_extensions++;
+    }
+    // Recapture extension
+    else if (config.enable_recapture_extensions && move.is_capture() && ply > 0) {
+        // Simple recapture detection - same target square as previous move
+        extension = 1;
+        current_stats.recapture_extensions++;
+    }
+    
+    return extension;
+}
+
+int Search::calculate_lmr_reduction(int depth, int move_count, const Move& move, bool is_pv_node) {
+    if (move_count <= config.lmr_full_depth_moves || depth <= 2) {
+        return 0;
+    }
+    
+    int reduction = 1;
+    
+    // Reduce more for non-PV nodes
+    if (!is_pv_node) {
+        reduction++;
+    }
+    
+    // Reduce more for later moves
+    if (move_count > 6) {
+        reduction++;
+    }
+    
+    // Don't reduce too much
+    reduction = std::min(reduction, config.lmr_reduction_limit);
+    reduction = std::min(reduction, depth - 1);
+    
+    current_stats.lmr_reductions++;
+    return reduction;
+}
+
+bool Search::can_do_null_move(const Board& board, int depth, int beta) {
+    if (depth < 3) return false;
+    if (move_gen->is_in_check(board, board.get_active_color())) return false;
+    
+    // Don't do null move in endgame
+    int material = evaluator->evaluate_material(board);
+    if (material < 1000) return false; // Less than a rook
+    
+    return true;
+}
+
+bool Search::can_futility_prune(const Board& board, int depth, int alpha) {
+    if (depth > 3) return false;
+    if (move_gen->is_in_check(board, board.get_active_color())) return false;
+    
+    int eval = evaluator->evaluate(board);
+    int margin = FUTILITY_MARGIN * depth;
+    
+    return eval + margin <= alpha;
+}
+
+void Search::check_time_and_stop() {
+}
+
+bool Search::time_expired() const {
+    // Check if we have allocated time and if it has been exceeded
+    if (allocated_time > std::chrono::milliseconds(0)) {
+        auto elapsed = std::chrono::steady_clock::now() - search_start_time;
+        return elapsed >= allocated_time;
+    }
+    return false;
+}
+
+void Search::update_time_management() {
+    // Update time management statistics
+    auto elapsed = std::chrono::steady_clock::now() - search_start_time;
+    current_stats.time_elapsed_ms = static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count());
+}
+
+int Search::parallel_search_worker(Board board, int depth, int alpha, int beta,
+                                  const std::vector<MoveScore>& moves,
+                                  int start_index, int end_index) {
+    
+    int best_score = -MATE_SCORE;
+    
+    for (int i = start_index; i < end_index && !should_stop(); ++i) {
+        const Move& move = moves[i].move;
+        
+        BitboardMoveUndoData undo_data = board.make_move(move);
+        
+        std::vector<Move> pv;
+        int score = -alpha_beta(board, depth - 1, -beta, -alpha, 1, pv);
+        
+        // *** IMMEDIATE STOP CHECK AFTER RECURSIVE CALL ***
         if (should_stop()) {
-            break;
+            board.undo_move(undo_data);
+            return best_score;
         }
         
-        const Move& move = ms.move;
+        board.undo_move(undo_data);
         
-        BitboardMoveUndoData undo_data = context.board.make_move(move);
+        best_score = std::max(best_score, score);
         
-        int score = -minimax_with_context(context, depth - 1, -beta, -alpha, false, 1);
-        
-        context.board.undo_move(undo_data);
-        
-        ms.score = score;
-        ms.evaluated = true;
-        
-        // Update alpha
-        if (score > alpha) {
-            alpha = score;
+        if (score >= beta) {
+            break; // Beta cutoff
         }
     }
+    
+    return best_score;
 }

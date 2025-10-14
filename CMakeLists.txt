@@ -70,6 +70,11 @@ add_executable(test_search
     src/main/test_search.cpp
 )
 
+# Create search fixes test executable
+add_executable(test_search_fixes
+        src/main/test_search_fixes.cpp
+)
+
 # Link bitboard library to bitboard test executable
 target_link_libraries(test_bitboards bitboard)
 
@@ -87,3 +92,6 @@ target_link_libraries(test_evaluation engine bitboard)
 
 # Link libraries to search test executable
 target_link_libraries(test_search engine bitboard atomic)
+
+# Link libraries to search fixes test executable
+target_link_libraries(test_search_fixes engine bitboard atomic)

@@ -4,7 +4,6 @@
 #include "Board.h"
 #include "Move.h"
 #include "Bitboard.h"
-#include <vector>
 
 /**
  * @brief Magic bitboard structure for sliding piece attack generation
@@ -238,19 +237,6 @@ public:
      * @return Bitboard with attacked squares set to 1
      */
     Bitboard get_attacked_squares(const Board& board, Board::Color color);
-    /**
-     * @brief Get attack pattern for a specific piece on a square
-     * 
-     * Returns the attack bitboard for the specified piece type
-     * on the given square, considering current board occupancy.
-     * 
-     * @param board The current board position
-     * @param square The square the piece is on (0-63)
-     * @param piece_type The type of piece
-     * @param color The color of the piece
-     * @return Bitboard with attacked squares set to 1
-     */
-    Bitboard get_piece_attacks(const Board& board, int square, Board::PieceType piece_type, Board::Color color);
     
     // Magic bitboard attack generation
     /**
@@ -549,20 +535,6 @@ private:
      * @return True if it's a promotion rank, false otherwise
      */
     bool is_promotion_rank(int rank, Board::Color color);
-    
-    // Performance counters
-    /**
-     * @brief Counter for nodes searched during move generation
-     * 
-     * Mutable counter used for performance analysis and debugging.
-     */
-    mutable uint64_t nodes_searched;
-    /**
-     * @brief Counter for total moves generated
-     * 
-     * Mutable counter used for performance analysis and debugging.
-     */
-    mutable uint64_t moves_generated;
 };
 
 #endif // BITBOARD_MOVE_GENERATOR_H

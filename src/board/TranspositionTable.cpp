@@ -135,7 +135,6 @@ TTResult TranspositionTable::probe(uint64_t zobrist_key, int depth, int alpha, i
             result.bound_type = entry.get_bound_type();
             result.age = entry.get_age();
             
-            stats_.hits++;
             
             // Check if we can use this entry for a cutoff
             if (entry.depth >= depth) {
@@ -144,9 +143,8 @@ TTResult TranspositionTable::probe(uint64_t zobrist_key, int depth, int alpha, i
                     (entry.get_bound_type() == TTBoundType::UPPER_BOUND && adjusted_score <= alpha)) {
                     result.can_cutoff = true;
                     stats_.cutoffs++;
-                } else {
+                    stats_.hits++;
                 }
-            } else {
             }
             
             return result;
