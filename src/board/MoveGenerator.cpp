@@ -1,4 +1,4 @@
-#include "MoveGenerator.h"
+#include "../../include/board/MoveGenerator.h"
 #include <algorithm>
 #include <iostream>
 #include <immintrin.h>  // For PEXT if available

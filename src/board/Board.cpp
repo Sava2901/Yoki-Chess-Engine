@@ -1,10 +1,10 @@
-#include "Board.h"
+#include "../../include/board/Board.h"
 #include <iostream>
 #include <sstream>
 #include <cctype>
 #include <algorithm>
 #include <cstring>
-#include "MoveGenerator.h"
+#include "../../include/board/MoveGenerator.h"
 
 // Castling lookup tables
 static const int CASTLING_ROOK_FROM[2] = {7, 0}; // [kingside, queenside]

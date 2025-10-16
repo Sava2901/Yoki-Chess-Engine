@@ -1,4 +1,4 @@
-#include "Bitboard.h"
+#include "../../include/board/Bitboard.h"
 #include <iostream>
 #include <iomanip>
 #include <random>

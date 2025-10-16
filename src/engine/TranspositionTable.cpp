@@ -1,5 +1,5 @@
-#include "TranspositionTable.h"
-#include "Board.h"
+#include "../../include/engine/TranspositionTable.h"
+#include "../../include/board/Board.h"
 #include <algorithm>
 #include <cstring>
 #include <iostream>

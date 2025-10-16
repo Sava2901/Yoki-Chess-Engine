@@ -1,5 +1,5 @@
-#include "Evaluation.h"
-#include "../board/MoveGenerator.h"
+#include "../../include/engine/Evaluation.h"
+#include "../../include/board/MoveGenerator.h"
 #include <random>
 #include <iostream>
 #include <iomanip>

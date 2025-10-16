@@ -1,6 +1,6 @@
-#include "../board/Board.h"
-#include "../board/Move.h"
-#include "../board/MoveGenerator.h"
+#include "../include/board/Board.h"
+#include "../include/board/Move.h"
+#include "../include/board/MoveGenerator.h"
 #include <iostream>
 #include <vector>
 #include <cassert>

@@ -5,7 +5,7 @@
 #include <vector>
 #include <iostream>
 #include <cstdint>
-#include "SmallVector.h"
+#include "../../src/board/util/SmallVector.h"
 
 /**
  * @brief Structure representing a chess move

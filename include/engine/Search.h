@@ -18,7 +18,7 @@
 #include "../board/Move.h"
 #include "../board/MoveGenerator.h"
 #include "./Evaluation.h"
-#include "../board/TranspositionTable.h"
+#include "./TranspositionTable.h"
 
 // Forward declarations
 class Board;

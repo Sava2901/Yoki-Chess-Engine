@@ -1,6 +1,6 @@
-#include "../engine/Search.h"
-#include "../board/Board.h"
-#include "../board/MoveGenerator.h"
+#include "../include/engine/Search.h"
+#include "../include/board/Board.h"
+#include "../include/board/MoveGenerator.h"
 #include <iostream>
 #include <chrono>
 #include <cassert>

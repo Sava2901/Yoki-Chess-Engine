@@ -1,6 +1,6 @@
-#include "../board/Bitboard.h"
-#include "../board/Board.h"
-#include "../board/MoveGenerator.h"
+#include "../include/board/Bitboard.h"
+#include "../include/board/Board.h"
+#include "../include/board/MoveGenerator.h"
 #include <iostream>
 #include <chrono>
 #include <iomanip>

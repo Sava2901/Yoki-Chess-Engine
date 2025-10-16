@@ -1,10 +1,10 @@
 #include <iostream>
 #include <vector>
 #include <chrono>
-#include "../board/Board.h"
-#include "../engine/Search.h"
-#include "../engine/Evaluation.h"
-#include "../board/MoveGenerator.h"
+#include "../include/board/Board.h"
+#include "../include/engine/Search.h"
+#include "../include/engine/Evaluation.h"
+#include "../include/board/MoveGenerator.h"
 
 int main() {
     std::cout << "Testing Search Engine PV Fixes..." << std::endl;

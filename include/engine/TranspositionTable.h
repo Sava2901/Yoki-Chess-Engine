@@ -6,7 +6,7 @@
 #include <atomic>
 #include <algorithm>
 #include <shared_mutex>
-#include "Move.h"
+#include "../board/Move.h"
 
 // Forward declarations
 class Board;

@@ -1,5 +1,5 @@
-#include "Engine.h"
-#include "Search.h"
+#include "../../include/engine/Engine.h"
+#include "../../include/engine/Search.h"
 
 Engine::Engine() : board(), current_position("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1") {}
 
