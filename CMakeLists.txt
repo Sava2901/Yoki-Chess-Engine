@@ -13,85 +13,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 #endif()
 
 # Add include directories
-include_directories(src)
+include_directories(include)
 
-# Create engine library
-add_library(engine
-    src/engine/Engine.cpp
-    src/engine/Engine.h
-    src/engine/Search.cpp
-    src/engine/Search.h
-    src/engine/Evaluation.cpp
-    src/engine/Evaluation.h
-)
-
-# Create bitboard library
-add_library(bitboard
-    src/board/Bitboard.cpp
-    src/board/Bitboard.h
-    src/board/Board.cpp
-    src/board/Board.h
-    src/board/MoveGenerator.cpp
-    src/board/MoveGenerator.h
-    src/board/SmallVector.h
-    src/board/Move.cpp
-    src/board/Move.h
-    src/board/TranspositionTable.h
-    src/board/TranspositionTable.cpp
-)
-
-# Create bitboard test executable
-add_executable(test_bitboards
-    src/main/test_bitboards.cpp
-)
-
-# Create attack test executable
-add_executable(attack_test
-    src/main/attack_test.cpp
-)
-
-# Create move/undo test executable
-add_executable(test_move_undo
-    src/main/test_move_undo.cpp
-)
-
-# Create piece movement test executable
-add_executable(test_piece_movement
-    src/main/test_piece_movement.cpp
-)
-
-# Create evaluation test executable
-add_executable(test_evaluation
-    src/main/test_evaluation.cpp
-)
-
-# Create search test executable
-add_executable(test_search
-    src/main/test_search.cpp
-)
-
-# Create search fixes test executable
-add_executable(test_search_fixes
-        src/main/test_search_fixes.cpp
-)
-
-# Link bitboard library to bitboard test executable
-target_link_libraries(test_bitboards bitboard)
-
-# Link bitboard library to attack test executable
-target_link_libraries(attack_test bitboard)
-
-# Link bitboard library to move/undo test executable
-target_link_libraries(test_move_undo bitboard)
-
-# Link bitboard library to piece movement test executable
-target_link_libraries(test_piece_movement bitboard)
-
-# Link libraries to evaluation test executable
-target_link_libraries(test_evaluation engine bitboard)
-
-# Link libraries to search test executable
-target_link_libraries(test_search engine bitboard atomic)
-
-# Link libraries to search fixes test executable
-target_link_libraries(test_search_fixes engine bitboard atomic)
+# Add subdirectories
+add_subdirectory(src)
+add_subdirectory(tests)
