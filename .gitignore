@@ -60,4 +60,4 @@ results.txt
 
 .vercel
 
-/tests
+tests/
