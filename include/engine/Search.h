@@ -208,13 +208,15 @@ struct KillerMoves {
 };
 
 /**
- * @brief History heuristic table for move ordering
+ * @brief History heuristic table for move ordering using butterfly tables
+ * Tracks move success from-square to to-square for better accuracy
  */
 struct HistoryTable {
     static constexpr int MAX_SQUARES = 64;
     static constexpr int MAX_PIECES = 12; // 6 piece types * 2 colors
     
-    int history[MAX_PIECES][MAX_SQUARES];
+    // Butterfly tables: [piece][from_square][to_square]
+    int history[MAX_PIECES][MAX_SQUARES][MAX_SQUARES];
     
     /**
      * @brief Constructor - initializes table to zero
@@ -224,27 +226,44 @@ struct HistoryTable {
     }
     
     /**
-     * @brief Update history score for a move
+     * @brief Update history score for a move (reward good moves)
      * @param move Move that caused cutoff
      * @param depth Search depth (higher depth = more important)
+     * @param bonus Additional bonus (can be negative for failed moves)
      */
-    void update(const Move& move, int depth) {
+    void update(const Move& move, int depth, int bonus = 0) {
         int piece_index = get_piece_index(move);
+        int from_square = move.from_rank * 8 + move.from_file;
         int to_square = move.to_rank * 8 + move.to_file;
         
         if (piece_index >= 0 && piece_index < MAX_PIECES && 
+            from_square >= 0 && from_square < MAX_SQUARES &&
             to_square >= 0 && to_square < MAX_SQUARES) {
-            history[piece_index][to_square] += depth * depth;
+            
+            // Bonus increases quadratically with depth
+            int score_delta = (depth * depth) + bonus;
+            history[piece_index][from_square][to_square] += score_delta;
             
             // Prevent overflow by scaling down if necessary
-            if (history[piece_index][to_square] > 100000) {
+            if (abs(history[piece_index][from_square][to_square]) > 100000) {
                 for (int i = 0; i < MAX_PIECES; ++i) {
                     for (int j = 0; j < MAX_SQUARES; ++j) {
-                        history[i][j] /= 2;
+                        for (int k = 0; k < MAX_SQUARES; ++k) {
+                            history[i][j][k] /= 2;
+                        }
                     }
                 }
             }
         }
+    }
+    
+    /**
+     * @brief Penalize a move that failed to cause cutoff
+     * @param move Move that failed
+     * @param depth Search depth
+     */
+    void penalize(const Move& move, int depth) {
+        update(move, 0, -(depth * depth / 4));
     }
     
     /**
@@ -254,11 +273,13 @@ struct HistoryTable {
      */
     int get_score(const Move& move) const {
         int piece_index = get_piece_index(move);
+        int from_square = move.from_rank * 8 + move.from_file;
         int to_square = move.to_rank * 8 + move.to_file;
         
         if (piece_index >= 0 && piece_index < MAX_PIECES && 
+            from_square >= 0 && from_square < MAX_SQUARES &&
             to_square >= 0 && to_square < MAX_SQUARES) {
-            return history[piece_index][to_square];
+            return history[piece_index][from_square][to_square];
         }
         return 0;
     }
@@ -269,7 +290,9 @@ struct HistoryTable {
     void clear() {
         for (int i = 0; i < MAX_PIECES; ++i) {
             for (int j = 0; j < MAX_SQUARES; ++j) {
-                history[i][j] = 0;
+                for (int k = 0; k < MAX_SQUARES; ++k) {
+                    history[i][j][k] = 0;
+                }
             }
         }
     }
@@ -305,6 +328,106 @@ private:
 };
 
 /**
+ * @brief Counter-move table for move ordering
+ * Tracks the best response to opponent's previous move
+ */
+struct CounterMoveTable {
+    static constexpr int MAX_PIECES = 12; // 6 piece types * 2 colors
+    static constexpr int MAX_SQUARES = 64;
+    
+    // counter_moves[previous_piece][previous_to_square] = best_counter_move
+    Move counter_moves[MAX_PIECES][MAX_SQUARES];
+    
+    /**
+     * @brief Constructor
+     */
+    CounterMoveTable() {
+        clear();
+    }
+    
+    /**
+     * @brief Update counter-move for opponent's previous move
+     * @param prev_move Opponent's previous move
+     * @param counter_move Our move that refuted it
+     */
+    void update(const Move& prev_move, const Move& counter_move) {
+        int piece_index = get_piece_index(prev_move);
+        int to_square = prev_move.to_rank * 8 + prev_move.to_file;
+        
+        if (piece_index >= 0 && piece_index < MAX_PIECES &&
+            to_square >= 0 && to_square < MAX_SQUARES) {
+            counter_moves[piece_index][to_square] = counter_move;
+        }
+    }
+    
+    /**
+     * @brief Get counter-move for opponent's previous move
+     * @param prev_move Opponent's previous move
+     * @return Counter-move (empty if none)
+     */
+    Move get_counter(const Move& prev_move) const {
+        int piece_index = get_piece_index(prev_move);
+        int to_square = prev_move.to_rank * 8 + prev_move.to_file;
+        
+        if (piece_index >= 0 && piece_index < MAX_PIECES &&
+            to_square >= 0 && to_square < MAX_SQUARES) {
+            return counter_moves[piece_index][to_square];
+        }
+        return Move();
+    }
+    
+    /**
+     * @brief Check if move is a counter-move
+     * @param prev_move Opponent's previous move
+     * @param move Move to check
+     * @return true if move is the counter-move
+     */
+    bool is_counter(const Move& prev_move, const Move& move) const {
+        Move counter = get_counter(prev_move);
+        return counter.from_rank == move.from_rank && 
+               counter.from_file == move.from_file &&
+               counter.to_rank == move.to_rank &&
+               counter.to_file == move.to_file;
+    }
+    
+    /**
+     * @brief Clear all counter-moves
+     */
+    void clear() {
+        for (int i = 0; i < MAX_PIECES; ++i) {
+            for (int j = 0; j < MAX_SQUARES; ++j) {
+                counter_moves[i][j] = Move();
+            }
+        }
+    }
+
+private:
+    /**
+     * @brief Get piece index for move
+     */
+    int get_piece_index(const Move& move) const {
+        char piece_char = move.piece;
+        if (piece_char == '.') return -1;
+        
+        bool is_white = (piece_char >= 'A' && piece_char <= 'Z');
+        char normalized = is_white ? piece_char : (piece_char - 'a' + 'A');
+        
+        int piece_type = -1;
+        switch (normalized) {
+            case 'P': piece_type = 0; break;
+            case 'N': piece_type = 1; break;
+            case 'B': piece_type = 2; break;
+            case 'R': piece_type = 3; break;
+            case 'Q': piece_type = 4; break;
+            case 'K': piece_type = 5; break;
+            default: return -1;
+        }
+        
+        return piece_type + (is_white ? 0 : 6);
+    }
+};
+
+/**
  * @brief Search configuration parameters
  */
 struct SearchConfig {
@@ -329,6 +452,7 @@ struct SearchConfig {
     // Move ordering
     bool enable_killer_moves = true;       ///< Enable killer move heuristic
     bool enable_history_heuristic = true;  ///< Enable history heuristic
+    bool enable_counter_moves = true;      ///< Enable counter-move heuristic
     bool enable_see_ordering = true;       ///< Enable SEE-based move ordering
     
     // Transposition table
@@ -346,7 +470,10 @@ struct SearchConfig {
     
     // Threading
     int thread_count = 1;                  ///< Number of search threads
-    bool enable_parallel_search = true;    ///< Enable parallel search
+    bool enable_parallel_search = false;   ///< Enable parallel search (disabled by default - adds overhead)
+    int min_split_depth = 100;             ///< Minimum depth for YBWC node splitting (high default disables YBWC)
+    int max_parallel_tasks = 64;           ///< Maximum simultaneous split points
+    int lazy_smp_instances = 0;            ///< Number of independent Lazy SMP search instances (0 = no Lazy SMP)
     
     /**
      * @brief Default constructor with sensible defaults
@@ -410,6 +537,9 @@ private:
  * move ordering, pruning techniques, and parallel search capabilities.
  */
 class Search {
+    // Friend class for testing private members
+    friend class SearchTester;
+    
 public:
     /**
      * @brief Default constructor
@@ -672,6 +802,27 @@ private:
     // Parallel search support
     
     /**
+     * @brief Lazy SMP parallel search - launches multiple independent ID searches
+     * @param board Position to search
+     * @param depth Search depth
+     * @param num_instances Number of independent search instances
+     * @param pv Principal variation output
+     * @return Best score found across all instances
+     */
+    int lazy_smp_search(const Board& board, int depth, int num_instances, std::vector<Move>& pv);
+    
+    /**
+     * @brief Parallel root search - efficiently distribute root moves among threads
+     * @param board Starting position
+     * @param depth Search depth
+     * @param alpha Alpha bound
+     * @param beta Beta bound
+     * @param pv Principal variation output
+     * @return Best score found
+     */
+    int parallel_root_search(Board& board, int depth, int alpha, int beta, std::vector<Move>& pv);
+    
+    /**
      * @brief Parallel search worker function
      * @param board Position to search
      * @param depth Search depth
@@ -701,9 +852,17 @@ private:
     // Move ordering tables
     KillerMoves killer_moves;              ///< Killer move table
     HistoryTable history_table;            ///< History heuristic table
+    CounterMoveTable counter_move_table;   ///< Counter-move table
+    
+    // Previous move tracking for counter-moves (per ply)
+    std::array<Move, 64> previous_moves;   ///< Track previous moves by ply for counter-move heuristic
     
     // Search statistics
     SearchStats current_stats;             ///< Current search statistics
+    
+    // YBWC split point tracking
+    std::atomic<int> active_split_points{0}; ///< Number of active split points
+    std::mutex split_point_mutex;          ///< Mutex for split point management
     
     // Thread synchronization
     mutable std::mutex search_mutex;       ///< Mutex for search state

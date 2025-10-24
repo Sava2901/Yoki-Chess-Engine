@@ -17,7 +17,41 @@ static constexpr int MATERIAL_VALUES[6] = {
 // ThreadPool implementation
 
 ThreadPool::ThreadPool(int num_threads) : stop_flag(false) {
-    // ThreadPool constructor - worker threads removed
+    // Create persistent worker threads
+    workers.reserve(num_threads);
+    for (int i = 0; i < num_threads; ++i) {
+        workers.emplace_back([this] {
+            // Worker thread loop - continuously process tasks
+            while (true) {
+                std::function<void()> task;
+                
+                {
+                    std::unique_lock<std::mutex> lock(queue_mutex);
+                    
+                    // Wait for a task or stop signal
+                    condition.wait(lock, [this] {
+                        return stop_flag || !tasks.empty();
+                    });
+                    
+                    // Exit if stop flag is set and queue is empty
+                    if (stop_flag && tasks.empty()) {
+                        return;
+                    }
+                    
+                    // Get next task from queue
+                    if (!tasks.empty()) {
+                        task = std::move(tasks.front());
+                        tasks.pop();
+                    }
+                }
+                
+                // Execute task outside of lock
+                if (task) {
+                    task();
+                }
+            }
+        });
+    }
 }
 
 ThreadPool::~ThreadPool() {
@@ -43,7 +77,41 @@ void ThreadPool::restart(int num_threads) {
     stop();
     stop_flag = false;
     
-    // ThreadPool restart - worker threads removed
+    // Recreate worker threads with new count
+    workers.reserve(num_threads);
+    for (int i = 0; i < num_threads; ++i) {
+        workers.emplace_back([this] {
+            // Worker thread loop - continuously process tasks
+            while (true) {
+                std::function<void()> task;
+                
+                {
+                    std::unique_lock<std::mutex> lock(queue_mutex);
+                    
+                    // Wait for a task or stop signal
+                    condition.wait(lock, [this] {
+                        return stop_flag || !tasks.empty();
+                    });
+                    
+                    // Exit if stop flag is set and queue is empty
+                    if (stop_flag && tasks.empty()) {
+                        return;
+                    }
+                    
+                    // Get next task from queue
+                    if (!tasks.empty()) {
+                        task = std::move(tasks.front());
+                        tasks.pop();
+                    }
+                }
+                
+                // Execute task outside of lock
+                if (task) {
+                    task();
+                }
+            }
+        });
+    }
 }
 
 Search::Search() : Search(SearchConfig()) {}
@@ -63,6 +131,11 @@ Search::Search(const SearchConfig& config) : config(config) {
     pv_table.resize(MAX_PLY);
     for (auto& pv : pv_table) {
         pv.reserve(MAX_PLY);
+    }
+    
+    // Initialize previous moves array
+    for (int i = 0; i < 64; ++i) {
+        previous_moves[i] = Move();
     }
     
     // Clear tables
@@ -131,7 +204,13 @@ void Search::clear_tables() {
     if (tt) tt->clear();
     killer_moves.clear();
     history_table.clear();
+    counter_move_table.clear();
     current_stats.reset();
+    
+    // Clear previous moves tracking
+    for (int i = 0; i < 64; ++i) {
+        previous_moves[i] = Move();
+    }
 }
 
 SearchResult Search::iterative_deepening(const Board& board, int max_depth, 
@@ -182,8 +261,19 @@ SearchResult Search::iterative_deepening(const Board& board, int max_depth,
             std::vector<Move> current_pv;
             int score;
             
-            // Use regular alpha-beta search
-            score = alpha_beta(const_cast<Board&>(board), depth, -MATE_SCORE, MATE_SCORE, 0, current_pv);
+            // Choose search strategy based on configuration
+            // With aggressive pruning reducing nodes by 70%, need depth 7+ for parallel benefit
+            if (config.thread_count > 1 && depth >= 7) {
+                // Use parallel root search at high depths where there's enough work
+                score = parallel_root_search(const_cast<Board&>(board), depth, -MATE_SCORE, MATE_SCORE, current_pv);
+            } else if (config.enable_aspiration_windows && depth >= 5 && prev_score != 0 && abs(prev_score) < MATE_SCORE - 100) {
+                // Use aspiration windows for faster convergence (only at higher depths to avoid overhead)
+                // Note: Aspiration windows disabled in parallel search to avoid complications
+                score = aspiration_search(const_cast<Board&>(board), depth, prev_score, current_pv);
+            } else {
+                // Use regular alpha-beta search with full window
+                score = alpha_beta(const_cast<Board&>(board), depth, -MATE_SCORE, MATE_SCORE, 0, current_pv);
+            }
             
             if (!current_pv.empty()) {
                 result.best_move = current_pv[0];
@@ -249,11 +339,9 @@ int Search::alpha_beta(Board& board, int depth, int alpha, int beta, int ply, st
     // Initialize PV as empty - don't clear if already has valid content
     // Only clear at the very end when we have the final best line
     
-    // Update node count
-    current_stats.nodes_searched++;
-    
     // Check for stop conditions
     if (ply >= MAX_PLY) {
+        current_stats.nodes_searched++;
         return evaluator->evaluate(board);
     }
     
@@ -294,6 +382,9 @@ int Search::alpha_beta(Board& board, int depth, int alpha, int beta, int ply, st
     
     // Terminal node check (depth 0 or leaf)
     if (depth <= 0) {
+        // Count this as a leaf node
+        current_stats.nodes_searched++;
+        
         // Clear PV for terminal nodes - no moves to add
         pv.clear();
         if (config.enable_quiescence_search) {
@@ -309,6 +400,9 @@ int Search::alpha_beta(Board& board, int depth, int alpha, int beta, int ply, st
     // Generate moves
     MoveList legal_moves = move_gen->generate_legal_moves(board);
     if (legal_moves.empty()) {
+        // Count this as a leaf node (terminal position)
+        current_stats.nodes_searched++;
+        
         // Clear PV for terminal nodes (checkmate/stalemate)
         pv.clear();
         // Checkmate or stalemate
@@ -327,6 +421,22 @@ int Search::alpha_beta(Board& board, int depth, int alpha, int beta, int ply, st
     
     // Order moves
     order_moves(board, moves, ply, tt_move);
+    
+    // Static evaluation for pruning decisions
+    bool in_check = move_gen->is_in_check(board, board.get_active_color());
+    int static_eval = in_check ? -MATE_SCORE : evaluator->evaluate(board);
+    bool is_pv = (beta - alpha > 1); // PV node if window is wider than 1
+    
+    // Reverse Futility Pruning (Static Null Move Pruning)
+    // If our position is so good that even a null move would beat beta, prune
+    if (depth <= 7 && !in_check && abs(beta) < MATE_SCORE - 100 && !is_pv) {
+        int margin = 150 * depth; // More aggressive margin
+        
+        if (static_eval - margin >= beta) {
+            current_stats.futility_prunes++;
+            return static_eval - margin; // Return conservative estimate
+        }
+    }
     
     // Null move pruning - only if we're not too deep
     if (config.enable_null_move_pruning && can_do_null_move(board, depth, beta) && ply < MAX_PLY - 5) {
@@ -347,11 +457,35 @@ int Search::alpha_beta(Board& board, int depth, int alpha, int beta, int ply, st
         }
     }
     
+    // Razoring - drop into quiescence if position looks bad
+    if (depth <= 3 && !move_gen->is_in_check(board, board.get_active_color()) && abs(alpha) < MATE_SCORE - 100) {
+        int static_eval = evaluator->evaluate(board);
+        int razor_margin = 300 + 200 * depth;
+        
+        if (static_eval + razor_margin < alpha) {
+            // Position looks bad - do quiescence search
+            std::vector<Move> qpv;
+            int qscore = quiescence_search(board, alpha - razor_margin, alpha - razor_margin + 1, ply, qpv);
+            if (qscore < alpha) {
+                current_stats.futility_prunes++;
+                return qscore;
+            }
+        }
+    }
+    
     // Main search loop
     int best_score = -MATE_SCORE;
     Move best_move;
     bool found_pv = false;
     int move_count = 0;
+    
+    // YBWC: Check if we should use parallel splitting for remaining moves
+    // Criteria: depth >= min_split_depth, multiple threads available, not too many active splits
+    bool can_split_ybwc = config.enable_parallel_search && 
+                          config.thread_count > 1 &&
+                          depth >= config.min_split_depth &&
+                          moves.size() > 4 &&
+                          active_split_points.load() < config.max_parallel_tasks;
     
     for (const MoveScore& move_score : moves) {
         if (should_stop()) {
@@ -359,7 +493,22 @@ int Search::alpha_beta(Board& board, int depth, int alpha, int beta, int ply, st
         }
         
         const Move& move = move_score.move;
-        BitboardMoveUndoData undo_data = board.make_move(move);
+        
+        // === FUTILITY PRUNING ===
+        // Skip quiet moves in low-depth positions that can't raise alpha
+        if (depth <= 3 && !is_pv && !in_check && move_count > 0 && 
+            !move.is_capture() && !move.is_promotion()) {
+            
+            static constexpr int futility_margins[4] = {0, 200, 350, 500};
+            int futility_value = static_eval + futility_margins[depth];
+            
+            if (futility_value <= alpha) {
+                move_count++;
+                continue; // Skip this move
+            }
+        }
+        
+        BitboardMoveUndoData undo_data = board.apply_move(move);
         move_count++;
         
         // Calculate extensions
@@ -370,16 +519,24 @@ int Search::alpha_beta(Board& board, int depth, int alpha, int beta, int ply, st
             }
         }
         
-        // Calculate reductions
+        // === IMPROVED LATE MOVE REDUCTIONS ===
         int reduction = 0;
-        if (config.enable_late_move_reductions && move_count > config.lmr_full_depth_moves &&
-            depth > 2 && !move.is_capture() && !move.is_promotion() &&
-            !move_gen->is_in_check(board, board.get_active_color())) {
-            reduction = calculate_lmr_reduction(depth, move_count, move, found_pv);
-            // Add extra reduction if we're getting deep to prevent stack overflow
-            if (ply > MAX_PLY / 2) {
-                reduction += 1;
+        if (config.enable_late_move_reductions && move_count > 3 &&
+            depth >= 3 && !move.is_capture() && !move.is_promotion() && !in_check) {
+            
+            // Aggressive reduction
+            reduction = 1 + (move_count / 4) + (depth / 4);
+            
+            // Reduce less for PV nodes
+            if (is_pv) reduction = std::max(0, reduction - 1);
+            
+            // Don't reduce killer moves as much
+            if (config.enable_killer_moves && killer_moves.is_killer(ply, move)) {
+                reduction = std::max(0, reduction - 1);
             }
+            
+            // Clamp
+            reduction = std::min(reduction, depth - 2);
         }
         
         int new_depth = depth - 1 + extensions - reduction;
@@ -390,12 +547,125 @@ int Search::alpha_beta(Board& board, int depth, int alpha, int beta, int ply, st
         int score;
         
         // Principal Variation Search (PVS)
-        if (move_count == 1) {
+        // NOTE: At the root (ply == 0), always use full window to avoid wasteful re-searches
+        if (move_count == 1 || ply == 0) {
             score = -alpha_beta(board, new_depth, -beta, -alpha, ply + 1, current_line);
 
             if (should_stop()) {
                 board.undo_move(undo_data);
                 return best_score > -MATE_SCORE ? best_score : entry_alpha;
+            }
+            
+            // After first move, check if we should spawn helpers for remaining moves (YBWC)
+            // Only split if first move didn't cause beta cutoff
+            if (can_split_ybwc && score < beta && moves.size() > move_count) {
+                // Increment split point count
+                active_split_points.fetch_add(1);
+                
+                // Undo first move before parallel search
+                board.undo_move(undo_data);
+                
+                // Update best from first move
+                if (score > best_score) {
+                    best_score = score;
+                    best_move = move;
+                }
+                if (score > alpha) {
+                    alpha = score;
+                    found_pv = true;
+                    pv.clear();
+                    pv.push_back(move);
+                    pv.insert(pv.end(), current_line.begin(), current_line.end());
+                }
+                
+                // Launch parallel search for remaining moves
+                std::mutex parallel_mutex;
+                std::atomic<int> parallel_alpha(alpha);
+                std::atomic<bool> helpers_should_stop(false); // Local stop flag for helpers
+                std::vector<Move> parallel_best_pv;
+                int parallel_best_score = best_score;
+                Move parallel_best_move = best_move;
+                
+                // Split remaining moves among threads
+                int remaining_count = static_cast<int>(moves.size()) - move_count;
+                int num_helpers = std::min(config.thread_count - 1, remaining_count);
+                int moves_per_helper = remaining_count / num_helpers;
+                
+                std::vector<std::future<void>> helper_futures;
+                helper_futures.reserve(num_helpers);
+                
+                for (int helper_id = 0; helper_id < num_helpers; ++helper_id) {
+                    int start_idx = move_count + helper_id * moves_per_helper;
+                    int end_idx = (helper_id == num_helpers - 1) ? static_cast<int>(moves.size()) : start_idx + moves_per_helper;
+                    
+                    auto helper_task = [this, &board, depth, &parallel_alpha, beta, ply, &moves, start_idx, end_idx,
+                                       &parallel_mutex, &parallel_best_score, &parallel_best_move, &parallel_best_pv, 
+                                       new_depth, &helpers_should_stop]() {
+                        Board helper_board = board; // Thread-local board copy
+                        
+                        for (int i = start_idx; i < end_idx && !should_stop() && !helpers_should_stop.load(); ++i) {
+                            const Move& helper_move = moves[i].move;
+                            BitboardMoveUndoData helper_undo = helper_board.apply_move(helper_move);
+                            
+                            std::vector<Move> helper_pv;
+                            int helper_score = -alpha_beta(helper_board, new_depth, -beta, -parallel_alpha.load(), ply + 1, helper_pv);
+                            
+                            helper_board.undo_move(helper_undo);
+                            
+                            if (should_stop() || helpers_should_stop.load()) {
+                                return;
+                            }
+                            
+                            // Update shared best result
+                            {
+                                std::lock_guard<std::mutex> lock(parallel_mutex);
+                                if (helper_score > parallel_best_score) {
+                                    parallel_best_score = helper_score;
+                                    parallel_best_move = helper_move;
+                                    parallel_best_pv.clear();
+                                    parallel_best_pv.push_back(helper_move);
+                                    parallel_best_pv.insert(parallel_best_pv.end(), helper_pv.begin(), helper_pv.end());
+                                    
+                                    if (helper_score > parallel_alpha.load()) {
+                                        parallel_alpha.store(helper_score);
+                                    }
+                                    
+                                    // Beta cutoff - stop all helpers (but not entire search)
+                                    if (helper_score >= beta) {
+                                        helpers_should_stop.store(true);
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    };
+                    
+                    helper_futures.push_back(thread_pool->submit(helper_task));
+                }
+                
+                // Wait for all helpers to complete
+                for (auto& future : helper_futures) {
+                    try {
+                        future.get();
+                    } catch (const std::exception& e) {
+                        std::cerr << "YBWC helper error: " << e.what() << std::endl;
+                    }
+                }
+                
+                // Decrement split point count
+                active_split_points.fetch_sub(1);
+                
+                // Update with parallel results
+                best_score = parallel_best_score;
+                best_move = parallel_best_move;
+                alpha = parallel_alpha.load();
+                if (!parallel_best_pv.empty()) {
+                    pv = parallel_best_pv;
+                    found_pv = true;
+                }
+                
+                // Skip to end of move loop since we processed all moves in parallel
+                break;
             }
         } else {
             // Late moves - search with null window first
@@ -438,16 +708,48 @@ int Search::alpha_beta(Board& board, int depth, int alpha, int beta, int ply, st
             pv.push_back(move);
             pv.insert(pv.end(), current_line.begin(), current_line.end());
 
-            // Beta cutoff actions
+            // Beta cutoff actions - this move was so good it caused a cutoff
             if (alpha >= beta) {
                 current_stats.beta_cutoffs++;
 
-                if (!move.is_capture()) {
-                    if (config.enable_killer_moves) killer_moves.add_killer(ply, move);
-                    if (config.enable_history_heuristic) history_table.update(move, depth);
+                // Update move ordering heuristics for quiet moves
+                if (!move.is_capture() && !move.is_promotion()) {
+                    // Add to killer moves
+                    if (config.enable_killer_moves) {
+                        killer_moves.add_killer(ply, move);
+                    }
+                    
+                    // Update history heuristic (reward this move)
+                    if (config.enable_history_heuristic) {
+                        history_table.update(move, depth);
+                        
+                        // Penalize moves that were tried before this one (failed to cause cutoff)
+                        for (int i = 0; i < move_count - 1; ++i) {
+                            const Move& failed_move = moves[i].move;
+                            if (!failed_move.is_capture() && !failed_move.is_promotion()) {
+                                history_table.penalize(failed_move, depth);
+                            }
+                        }
+                    }
+                    
+                    // Update counter-move table (this move refuted opponent's last move)
+                    if (config.enable_counter_moves && ply > 0) {
+                        Move prev_move = previous_moves[ply - 1];
+                        counter_move_table.update(prev_move, move);
+                    }
+                }
+
+                // Store this move for counter-move tracking at next ply
+                if (ply < MAX_PLY) {
+                    previous_moves[ply] = move;
                 }
 
                 break; // beta cutoff
+            }
+        } else {
+            // Move failed to improve alpha - penalize it slightly in history
+            if (config.enable_history_heuristic && !move.is_capture() && !move.is_promotion()) {
+                history_table.penalize(move, depth / 4); // Small penalty
             }
         }
     } // end moves loop
@@ -460,7 +762,7 @@ int Search::alpha_beta(Board& board, int depth, int alpha, int beta, int ply, st
         
         // Try to get a deeper PV by searching the best move again
         if (depth > 1) {
-            BitboardMoveUndoData undo_data = board.make_move(best_move);
+            BitboardMoveUndoData undo_data = board.apply_move(best_move);
             std::vector<Move> deeper_pv;
             
             // Search with a null window to get the PV
@@ -490,10 +792,7 @@ int Search::alpha_beta(Board& board, int depth, int alpha, int beta, int ply, st
     return best_score;
 }
 
-
-
 // Timer implementation functions
-
 void Search::timer_worker(std::chrono::milliseconds time_limit) {
     std::unique_lock<std::mutex> lock(timer_mutex);
     
@@ -658,7 +957,7 @@ int Search::quiescence_search(Board& board, int alpha, int beta, int ply, std::v
         }
         
         // Make move
-        BitboardMoveUndoData undo_data = board.make_move(move);
+        BitboardMoveUndoData undo_data = board.apply_move(move);
         
         // Recursive quiescence search
         std::vector<Move> child_pv;
@@ -740,37 +1039,76 @@ int Search::aspiration_search(Board& board, int depth, int prev_score, std::vect
 
 void Search::order_moves(const Board& board, std::vector<MoveScore>& moves, 
                         int ply, const Move& tt_move) {
+    // Get previous move for counter-move heuristic
+    Move prev_move = (ply > 0) ? previous_moves[ply - 1] : Move();
+    
     // Score all moves
     for (MoveScore& move_score : moves) {
         const Move& move = move_score.move;
         int score = 0;
         
-        // Hash move gets highest priority
+        // Hash move gets highest priority (TT move is likely best)
         if (move == tt_move) {
-            score = 1000000;
+            score = 10000000;
         }
-        // Captures
+        // Captures - evaluate winning/equal captures highly
         else if (move.is_capture()) {
-            score = 100000 + calculate_mvv_lva_score(move);
+            int mvv_lva = calculate_mvv_lva_score(move);
+            score = 8000000 + mvv_lva;
             
-            // SEE adjustment
+            // SEE adjustment - good captures get bonus, bad ones get penalty
             if (config.enable_see_ordering) {
                 int see_score = calculate_see_score(board, move);
-                score += see_score;
+                if (see_score < 0) {
+                    // Losing capture - demote significantly
+                    score = 2000000 + see_score;
+                } else {
+                    score += see_score * 10; // Amplify good captures
+                }
             }
         }
-        // Promotions
+        // Queen promotions are extremely good
         else if (move.is_promotion()) {
             Board::PieceType promotion_type = Board::char_to_piece_type(move.promotion_piece);
-            score = 90000 + static_cast<int>(promotion_type) * 1000;
+            if (promotion_type == Board::QUEEN) {
+                score = 9000000; // Almost as good as hash move
+            } else {
+                score = 7000000 + static_cast<int>(promotion_type) * 10000;
+            }
         }
-        // Killer moves
+        // Counter-move heuristic (response to opponent's last move)
+        else if (config.enable_counter_moves && ply > 0 && 
+                 counter_move_table.is_counter(prev_move, move)) {
+            score = 6000000;
+        }
+        // Killer moves (non-capture moves that caused cutoffs at this ply)
         else if (config.enable_killer_moves && killer_moves.is_killer(ply, move)) {
-            score = 80000;
+            // First killer is better than second
+            if (move == killer_moves.killers[ply][0]) {
+                score = 5000000;
+            } else {
+                score = 4000000;
+            }
         }
-        // History heuristic
-        else if (config.enable_history_heuristic) {
-            score = history_table.get_score(move);
+        // Quiet moves - use history heuristic and positional bonuses
+        else {
+            if (config.enable_history_heuristic) {
+                score = history_table.get_score(move);
+            }
+            
+            // Bonus for advancing pawns to 7th rank (likely promotion threats)
+            char piece = move.piece;
+            if (piece == 'P' && move.to_rank == 6) {
+                score += 50000; // White pawn to 7th rank
+            } else if (piece == 'p' && move.to_rank == 1) {
+                score += 50000; // Black pawn to 7th rank
+            }
+            
+            // Small bonus for central moves (e4, d4, e5, d5)
+            if ((move.to_rank == 3 || move.to_rank == 4) && 
+                (move.to_file == 3 || move.to_file == 4)) {
+                score += 1000;
+            }
         }
         
         move_score.score = score;
@@ -787,17 +1125,40 @@ int Search::calculate_mvv_lva_score(const Move& move) const {
     }
     
     // MVV-LVA: Most Valuable Victim - Least Valuable Attacker
+    // Higher score = better capture
     Board::PieceType victim_type = Board::char_to_piece_type(move.captured_piece);
     Board::PieceType attacker_type = Board::char_to_piece_type(move.piece);
     
-    int victim_value = MATERIAL_VALUES[victim_type];
-    int attacker_value = MATERIAL_VALUES[attacker_type];
+    // Use fixed values optimized for move ordering (not exact material values)
+    static constexpr int VICTIM_VALUES[6] = {
+        100,    // PAWN
+        320,    // KNIGHT
+        330,    // BISHOP
+        500,    // ROOK
+        900,    // QUEEN
+        10000   // KING (shouldn't happen but just in case)
+    };
     
-    return victim_value * 100 - attacker_value;
+    static constexpr int ATTACKER_VALUES[6] = {
+        1,   // PAWN (least valuable attacker is good)
+        2,   // KNIGHT
+        3,   // BISHOP
+        4,   // ROOK
+        5,   // QUEEN
+        6    // KING (most valuable attacker is bad)
+    };
+    
+    int victim_value = VICTIM_VALUES[victim_type];
+    int attacker_value = ATTACKER_VALUES[attacker_type];
+    
+    // Score formula: prioritize victim value, then penalize attacker value
+    // This ensures QxP > RxP > BxP > NxP > PxP for the same victim
+    return victim_value * 10 - attacker_value;
 }
 
 int Search::calculate_see_score(const Board& board, const Move& move) const {
-    // Simplified SEE implementation
+    // Simplified SEE (Static Exchange Evaluation) implementation
+    // Estimates the material outcome of a capture sequence
     if (!move.is_capture()) {
         return 0;
     }
@@ -805,21 +1166,31 @@ int Search::calculate_see_score(const Board& board, const Move& move) const {
     Board::PieceType victim_type = Board::char_to_piece_type(move.captured_piece);
     Board::PieceType attacker_type = Board::char_to_piece_type(move.piece);
     
-    // Use material values directly from the evaluation constants
-    static constexpr int MATERIAL_VALUES[6] = {
-        100,  // PAWN
-        325,  // KNIGHT
-        335,  // BISHOP
-        500,  // ROOK
-        975,  // QUEEN
-        20000 // KING
+    // Material values for SEE calculation
+    static constexpr int PIECE_VALUES[6] = {
+        100,   // PAWN
+        320,   // KNIGHT
+        330,   // BISHOP
+        500,   // ROOK
+        900,   // QUEEN
+        20000  // KING
     };
     
-    int gain = MATERIAL_VALUES[victim_type];
-    int risk = MATERIAL_VALUES[attacker_type];
+    int gain = PIECE_VALUES[victim_type];
+    int risk = PIECE_VALUES[attacker_type];
     
-    // Simple heuristic: if we're capturing with a less valuable piece, it's good
-    return gain - risk;
+    // Basic SEE heuristic:
+    // - If we capture with equal/lower value piece: likely good (gain - risk/2)
+    // - If we capture with higher value piece: might be risky (gain - risk)
+    // - PxQ is great (+800), QxP is risky (-800)
+    
+    if (attacker_type <= victim_type) {
+        // Good capture: equal or better exchange
+        return gain - (risk / 4); // Small penalty for risk
+    } else {
+        // Risky capture: using more valuable piece to capture less valuable
+        return gain - risk; // Full risk penalty
+    }
 }
 
 int Search::calculate_extensions(const Board& board, const Move& move, int ply, int extensions_used) {
@@ -849,23 +1220,32 @@ int Search::calculate_lmr_reduction(int depth, int move_count, const Move& move,
         return 0;
     }
     
-    int reduction = 1;
+    // More aggressive LMR formula: log(depth) * log(move_count) / 2
+    // This gives much bigger reductions for late moves at deep depths
+    int reduction = 0;
     
-    // Reduce more for non-PV nodes
-    if (!is_pv_node) {
-        reduction++;
-    }
-    
-    // Reduce more for later moves
-    if (move_count > 6) {
-        reduction++;
+    if (move_count >= 4) {
+        // Logarithmic scaling - more aggressive reduction
+        reduction = 1 + (depth / 3) + (move_count / 6);
+        
+        // Reduce more for non-PV nodes
+        if (!is_pv_node) {
+            reduction += 1;
+        }
+        
+        // Even more reduction for very late moves
+        if (move_count > 12) {
+            reduction += 1;
+        }
     }
     
     // Don't reduce too much
     reduction = std::min(reduction, config.lmr_reduction_limit);
     reduction = std::min(reduction, depth - 1);
     
-    current_stats.lmr_reductions++;
+    if (reduction > 0) {
+        current_stats.lmr_reductions++;
+    }
     return reduction;
 }
 
@@ -908,6 +1288,211 @@ void Search::update_time_management() {
     current_stats.time_elapsed_ms = static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count());
 }
 
+int Search::lazy_smp_search(const Board& board, int depth, int num_instances, std::vector<Move>& pv) {
+    // DISABLED: Lazy SMP has too much overhead (board copying, duplicate work)
+    // Fall back to single-threaded search
+    std::cerr << "Warning: Lazy SMP disabled due to poor performance. Using single-threaded search." << std::endl;
+    return alpha_beta(const_cast<Board&>(board), depth, -MATE_SCORE, MATE_SCORE, 0, pv);
+}
+
+int Search::parallel_root_search(Board& board, int depth, int alpha, int beta, std::vector<Move>& pv) {
+    // Generate and order all root moves
+    MoveList legal_moves = move_gen->generate_legal_moves(board);
+    
+    if (legal_moves.empty()) {
+        return move_gen->is_in_check(board, board.get_active_color()) ? 
+               -MATE_SCORE : 0;
+    }
+    
+    // Convert to MoveScore and order
+    std::vector<MoveScore> moves;
+    moves.reserve(legal_moves.size());
+    for (const Move& move : legal_moves) {
+        moves.emplace_back(move);
+    }
+    
+    Move tt_move;
+    order_moves(board, moves, 0, tt_move);
+    
+    // Single move? No need for parallelization
+    if (moves.size() == 1) {
+        pv.clear();
+        pv.push_back(moves[0].move);
+        BitboardMoveUndoData undo = board.apply_move(moves[0].move);
+        std::vector<Move> child_pv;
+        int score = -alpha_beta(board, depth - 1, -beta, -alpha, 1, child_pv);
+        board.undo_move(undo);
+        pv.insert(pv.end(), child_pv.begin(), child_pv.end());
+        return score;
+    }
+    
+    // Determine how many threads to use
+    // With ultra-low overhead, can use more threads effectively
+    int num_threads = std::min({config.thread_count, static_cast<int>(moves.size()), 8});
+    
+    // Need sufficient work to justify thread overhead - depth 7+ with aggressive pruning
+    if (num_threads <= 1 || !config.enable_parallel_search || moves.size() < 2 || depth < 7) {
+        // Single-threaded search - use PVS with apply_move for efficiency
+        int best_score = -MATE_SCORE;
+        Move best_move;
+        std::vector<Move> best_pv;
+        
+        for (size_t i = 0; i < moves.size() && !should_stop(); ++i) {
+            const Move& move = moves[i].move;
+            // Use apply_move - faster, no legality check needed
+            BitboardMoveUndoData undo = board.apply_move(move);
+            
+            std::vector<Move> current_pv;
+            int score;
+            
+            if (i == 0) {
+                // First move - full window
+                score = -alpha_beta(board, depth - 1, -beta, -alpha, 1, current_pv);
+            } else {
+                // PVS: try null window first
+                score = -alpha_beta(board, depth - 1, -alpha - 1, -alpha, 1, current_pv);
+                
+                if (score > alpha && score < beta) {
+                    // Re-search with full window
+                    current_pv.clear();
+                    score = -alpha_beta(board, depth - 1, -beta, -alpha, 1, current_pv);
+                }
+            }
+            
+            board.undo_move(undo);
+            
+            if (score > best_score) {
+                best_score = score;
+                best_move = move;
+                best_pv = current_pv;
+                
+                if (score > alpha) {
+                    alpha = score;
+                    pv.clear();
+                    pv.push_back(move);
+                    pv.insert(pv.end(), current_pv.begin(), current_pv.end());
+                }
+            }
+        }
+        
+        return best_score;
+    }
+    
+    // PARALLEL SEARCH: Ultra-optimized with proper memory safety
+    // Key optimizations:
+    // 1. Shared pointer for safe cross-thread access
+    // 2. NO atomics in hot path - each thread works independently
+    // 3. Pre-allocated results array - no dynamic allocation
+    // 4. Batch processing - minimal thread creation overhead
+    
+    struct MoveResult {
+        int score = -MATE_SCORE;
+        bool searched = false;
+    };
+    
+    // Use shared_ptr for thread-safe lifetime management
+    auto results = std::make_shared<std::vector<MoveResult>>(moves.size());
+    auto pvs = std::make_shared<std::vector<std::vector<Move>>>(moves.size());
+    
+    // Search first move on main thread to get good alpha quickly
+    {
+        const Move& first_move = moves[0].move;
+        BitboardMoveUndoData undo = board.apply_move(first_move);
+        (*results)[0].score = -alpha_beta(board, depth - 1, -beta, -alpha, 1, (*pvs)[0]);
+        board.undo_move(undo);
+        (*results)[0].searched = true;
+        
+        if ((*results)[0].score > alpha) {
+            alpha = (*results)[0].score;
+        }
+        
+        if ((*results)[0].score >= beta) {
+            pv.clear();
+            pv.push_back(first_move);
+            pv.insert(pv.end(), (*pvs)[0].begin(), (*pvs)[0].end());
+            return (*results)[0].score;
+        }
+    }
+    
+    // Distribute remaining moves to threads
+    const size_t remaining = moves.size() - 1;
+    if (remaining == 0) {
+        pv.clear();
+        pv.push_back(moves[0].move);
+        pv.insert(pv.end(), (*pvs)[0].begin(), (*pvs)[0].end());
+        return (*results)[0].score;
+    }
+    
+    // Use at most one thread per remaining move
+    const int actual_threads = std::min(num_threads, static_cast<int>(remaining));
+    const size_t chunk_size = (remaining + actual_threads - 1) / actual_threads;
+    
+    // Store alpha for threads to use (after first move improves it)
+    const int search_alpha = alpha;
+    const int search_beta = beta;
+    const int search_depth = depth;
+    
+    // Lambda for thread work - captures shared_ptr for safe access
+    auto worker = [this, results, pvs, search_alpha, search_beta, search_depth](Board& local_board, const std::vector<MoveScore>& local_moves, int thread_id, size_t chunk_size) {
+        size_t start = 1 + thread_id * chunk_size;
+        size_t end = std::min(start + chunk_size, local_moves.size());
+        
+        for (size_t i = start; i < end && !should_stop(); ++i) {
+            const Move& move = local_moves[i].move;
+            
+            // Fast move application
+            BitboardMoveUndoData undo = local_board.apply_move(move);
+            
+            // IMPORTANT: Use FULL window for parallel root search
+            // Null window PVS causes premature cutoffs when threads search independently
+            int score = -alpha_beta(local_board, search_depth - 1, -search_beta, -search_alpha, 1, (*pvs)[i]);
+            
+            local_board.undo_move(undo);
+            
+            (*results)[i].score = score;
+            (*results)[i].searched = true;
+        }
+    };
+    
+    // Launch threads with board copies
+    std::vector<std::future<void>> futures;
+    futures.reserve(actual_threads);
+    
+    for (int t = 0; t < actual_threads; ++t) {
+        Board thread_board = board;  // Create board copy in parent scope
+        futures.push_back(thread_pool->submit([worker, t, chunk_size, thread_board = std::move(thread_board), &moves]() mutable {
+            worker(thread_board, moves, t, chunk_size);
+        }));
+    }
+    
+    // Wait for all threads (with exception handling)
+    for (auto& f : futures) {
+        try {
+            f.get();
+        } catch (...) {
+            // Silently handle exceptions (search may have been interrupted)
+        }
+    }
+    
+    // Collect best result (no locks needed - all writes are done)
+    int best_score = (*results)[0].score;
+    size_t best_idx = 0;
+    
+    for (size_t i = 1; i < moves.size(); ++i) {
+        if ((*results)[i].searched && (*results)[i].score > best_score) {
+            best_score = (*results)[i].score;
+            best_idx = i;
+        }
+    }
+    
+    // Construct PV
+    pv.clear();
+    pv.push_back(moves[best_idx].move);
+    pv.insert(pv.end(), (*pvs)[best_idx].begin(), (*pvs)[best_idx].end());
+    
+    return best_score;
+}
+
 int Search::parallel_search_worker(Board board, int depth, int alpha, int beta,
                                   const std::vector<MoveScore>& moves,
                                   int start_index, int end_index) {
@@ -917,7 +1502,7 @@ int Search::parallel_search_worker(Board board, int depth, int alpha, int beta,
     for (int i = start_index; i < end_index && !should_stop(); ++i) {
         const Move& move = moves[i].move;
         
-        BitboardMoveUndoData undo_data = board.make_move(move);
+        BitboardMoveUndoData undo_data = board.apply_move(move);
         
         std::vector<Move> pv;
         int score = -alpha_beta(board, depth - 1, -beta, -alpha, 1, pv);

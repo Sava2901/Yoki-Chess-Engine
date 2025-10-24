@@ -253,7 +253,7 @@ int TranspositionTable::get_hashfull() const {
     }
     
     // Sample a portion of the table to estimate fullness
-    const size_t sample_size = std::min(bucket_count_, size_t(1000));
+    const size_t sample_size = std::min(bucket_count_, static_cast<size_t>(1000));
     size_t filled_entries = 0;
     size_t total_entries = 0;
     
