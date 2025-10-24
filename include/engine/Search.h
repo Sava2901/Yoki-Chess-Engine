@@ -45,39 +45,88 @@ struct TimeUpException : public std::exception {
  * Contains comprehensive performance metrics and diagnostic information.
  */
 struct SearchStats {
-    uint64_t nodes_searched = 0;           ///< Total nodes searched
-    uint64_t qnodes_searched = 0;          ///< Quiescence nodes searched
-    uint64_t tt_hits = 0;                  ///< Transposition table hits
-    uint64_t tt_cutoffs = 0;               ///< TT-induced cutoffs
-    uint64_t beta_cutoffs = 0;             ///< Beta cutoffs (fail-high)
-    uint64_t alpha_improvements = 0;       ///< Alpha improvements
-    uint64_t null_move_cutoffs = 0;        ///< Null move pruning cutoffs
-    uint64_t futility_prunes = 0;          ///< Futility pruning cutoffs
-    uint64_t lmr_reductions = 0;           ///< Late move reductions applied
-    uint64_t check_extensions = 0;         ///< Check extensions applied
-    uint64_t singular_extensions = 0;      ///< Singular extensions applied
-    uint64_t recapture_extensions = 0;     ///< Recapture extensions applied
+    std::atomic<uint64_t> nodes_searched{0};        ///< Total nodes searched (atomic for thread-safety)
+    std::atomic<uint64_t> qnodes_searched{0};       ///< Quiescence nodes searched (atomic for thread-safety)
+    std::atomic<uint64_t> tt_hits{0};               ///< Transposition table hits (atomic for thread-safety)
+    std::atomic<uint64_t> tt_cutoffs{0};            ///< TT-induced cutoffs (atomic for thread-safety)
+    std::atomic<uint64_t> beta_cutoffs{0};          ///< Beta cutoffs (fail-high, atomic for thread-safety)
+    std::atomic<uint64_t> alpha_improvements{0};    ///< Alpha improvements (atomic for thread-safety)
+    std::atomic<uint64_t> null_move_cutoffs{0};     ///< Null move pruning cutoffs (atomic for thread-safety)
+    std::atomic<uint64_t> futility_prunes{0};       ///< Futility pruning cutoffs (atomic for thread-safety)
+    std::atomic<uint64_t> lmr_reductions{0};        ///< Late move reductions applied (atomic for thread-safety)
+    std::atomic<uint64_t> check_extensions{0};      ///< Check extensions applied (atomic for thread-safety)
+    std::atomic<uint64_t> singular_extensions{0};   ///< Singular extensions applied (atomic for thread-safety)
+    std::atomic<uint64_t> recapture_extensions{0};  ///< Recapture extensions applied (atomic for thread-safety)
     
     double branching_factor = 0.0;         ///< Average branching factor
     double time_elapsed_ms = 0.0;          ///< Total search time in milliseconds
     double nodes_per_second = 0.0;         ///< Search speed (nodes/second)
     
     /**
+     * @brief Default constructor
+     */
+    SearchStats() = default;
+    
+    /**
+     * @brief Copy constructor - loads atomic values
+     */
+    SearchStats(const SearchStats& other) 
+        : nodes_searched(other.nodes_searched.load())
+        , qnodes_searched(other.qnodes_searched.load())
+        , tt_hits(other.tt_hits.load())
+        , tt_cutoffs(other.tt_cutoffs.load())
+        , beta_cutoffs(other.beta_cutoffs.load())
+        , alpha_improvements(other.alpha_improvements.load())
+        , null_move_cutoffs(other.null_move_cutoffs.load())
+        , futility_prunes(other.futility_prunes.load())
+        , lmr_reductions(other.lmr_reductions.load())
+        , check_extensions(other.check_extensions.load())
+        , singular_extensions(other.singular_extensions.load())
+        , recapture_extensions(other.recapture_extensions.load())
+        , branching_factor(other.branching_factor)
+        , time_elapsed_ms(other.time_elapsed_ms)
+        , nodes_per_second(other.nodes_per_second) {}
+    
+    /**
+     * @brief Copy assignment operator - loads and stores atomic values
+     */
+    SearchStats& operator=(const SearchStats& other) {
+        if (this != &other) {
+            nodes_searched.store(other.nodes_searched.load());
+            qnodes_searched.store(other.qnodes_searched.load());
+            tt_hits.store(other.tt_hits.load());
+            tt_cutoffs.store(other.tt_cutoffs.load());
+            beta_cutoffs.store(other.beta_cutoffs.load());
+            alpha_improvements.store(other.alpha_improvements.load());
+            null_move_cutoffs.store(other.null_move_cutoffs.load());
+            futility_prunes.store(other.futility_prunes.load());
+            lmr_reductions.store(other.lmr_reductions.load());
+            check_extensions.store(other.check_extensions.load());
+            singular_extensions.store(other.singular_extensions.load());
+            recapture_extensions.store(other.recapture_extensions.load());
+            branching_factor = other.branching_factor;
+            time_elapsed_ms = other.time_elapsed_ms;
+            nodes_per_second = other.nodes_per_second;
+        }
+        return *this;
+    }
+    
+    /**
      * @brief Reset all statistics to zero
      */
     void reset() {
-        nodes_searched = 0;
-        qnodes_searched = 0;
-        tt_hits = 0;
-        tt_cutoffs = 0;
-        beta_cutoffs = 0;
-        alpha_improvements = 0;
-        null_move_cutoffs = 0;
-        futility_prunes = 0;
-        lmr_reductions = 0;
-        check_extensions = 0;
-        singular_extensions = 0;
-        recapture_extensions = 0;
+        nodes_searched.store(0);
+        qnodes_searched.store(0);
+        tt_hits.store(0);
+        tt_cutoffs.store(0);
+        beta_cutoffs.store(0);
+        alpha_improvements.store(0);
+        null_move_cutoffs.store(0);
+        futility_prunes.store(0);
+        lmr_reductions.store(0);
+        check_extensions.store(0);
+        singular_extensions.store(0);
+        recapture_extensions.store(0);
         branching_factor = 0.0;
         time_elapsed_ms = 0.0;
         nodes_per_second = 0.0;
@@ -88,7 +137,7 @@ struct SearchStats {
      */
     void calculate_derived_stats() {
         if (time_elapsed_ms > 0.0) {
-            nodes_per_second = (nodes_searched * 1000.0) / time_elapsed_ms;
+            nodes_per_second = (nodes_searched.load() * 1000.0) / time_elapsed_ms;
         }
     }
 };
@@ -167,6 +216,7 @@ struct KillerMoves {
     static constexpr int KILLERS_PER_PLY = 2;
     
     Move killers[MAX_PLY][KILLERS_PER_PLY];
+    mutable std::mutex mutex_;  // Protect concurrent access
     
     /**
      * @brief Add a killer move at the given ply
@@ -175,6 +225,7 @@ struct KillerMoves {
      */
     void add_killer(int ply, const Move& move) {
         if (ply >= 0 && ply < MAX_PLY) {
+            std::lock_guard<std::mutex> lock(mutex_);
             if (killers[ply][0] != move) {
                 killers[ply][1] = killers[ply][0];
                 killers[ply][0] = move;
@@ -190,6 +241,7 @@ struct KillerMoves {
      */
     bool is_killer(int ply, const Move& move) const {
         if (ply >= 0 && ply < MAX_PLY) {
+            std::lock_guard<std::mutex> lock(mutex_);
             return killers[ply][0] == move || killers[ply][1] == move;
         }
         return false;
@@ -199,6 +251,7 @@ struct KillerMoves {
      * @brief Clear all killer moves
      */
     void clear() {
+        std::lock_guard<std::mutex> lock(mutex_);
         for (int i = 0; i < MAX_PLY; ++i) {
             for (int j = 0; j < KILLERS_PER_PLY; ++j) {
                 killers[i][j] = Move();
@@ -217,6 +270,7 @@ struct HistoryTable {
     
     // Butterfly tables: [piece][from_square][to_square]
     int history[MAX_PIECES][MAX_SQUARES][MAX_SQUARES];
+    mutable std::mutex mutex_;  // Protect concurrent access
     
     /**
      * @brief Constructor - initializes table to zero
@@ -239,6 +293,8 @@ struct HistoryTable {
         if (piece_index >= 0 && piece_index < MAX_PIECES && 
             from_square >= 0 && from_square < MAX_SQUARES &&
             to_square >= 0 && to_square < MAX_SQUARES) {
+            
+            std::lock_guard<std::mutex> lock(mutex_);
             
             // Bonus increases quadratically with depth
             int score_delta = (depth * depth) + bonus;
@@ -279,6 +335,7 @@ struct HistoryTable {
         if (piece_index >= 0 && piece_index < MAX_PIECES && 
             from_square >= 0 && from_square < MAX_SQUARES &&
             to_square >= 0 && to_square < MAX_SQUARES) {
+            std::lock_guard<std::mutex> lock(mutex_);
             return history[piece_index][from_square][to_square];
         }
         return 0;
@@ -288,6 +345,7 @@ struct HistoryTable {
      * @brief Clear all history scores
      */
     void clear() {
+        std::lock_guard<std::mutex> lock(mutex_);
         for (int i = 0; i < MAX_PIECES; ++i) {
             for (int j = 0; j < MAX_SQUARES; ++j) {
                 for (int k = 0; k < MAX_SQUARES; ++k) {
@@ -470,10 +528,10 @@ struct SearchConfig {
     
     // Threading
     int thread_count = 1;                  ///< Number of search threads
-    bool enable_parallel_search = false;   ///< Enable parallel search (disabled by default - adds overhead)
+    bool enable_parallel_search = true;    ///< Enable parallel search (now optimized with low overhead)
     int min_split_depth = 100;             ///< Minimum depth for YBWC node splitting (high default disables YBWC)
     int max_parallel_tasks = 64;           ///< Maximum simultaneous split points
-    int lazy_smp_instances = 0;            ///< Number of independent Lazy SMP search instances (0 = no Lazy SMP)
+    int lazy_smp_instances = 0;            ///< Number of independent Lazy SMP search instances (0 = no Lazy SMP, use parallel root search instead)
     
     /**
      * @brief Default constructor with sensible defaults
@@ -503,7 +561,7 @@ public:
      * @return Future for the task result
      */
     template<typename F, typename... Args>
-    auto submit(F&& task, Args&&... args) -> std::future<typename std::result_of<F(Args...)>::type>;
+    auto submit(F&& task, Args&&... args) -> std::future<typename std::invoke_result<F, Args...>::type>;
     
     /**
      * @brief Get number of worker threads
@@ -887,8 +945,8 @@ private:
 
 // Template implementation for ThreadPool::submit
 template<typename F, typename... Args>
-auto ThreadPool::submit(F&& task, Args&&... args) -> std::future<typename std::result_of<F(Args...)>::type> {
-    using return_type = typename std::result_of<F(Args...)>::type;
+auto ThreadPool::submit(F&& task, Args&&... args) -> std::future<typename std::invoke_result<F, Args...>::type> {
+    using return_type = typename std::invoke_result<F, Args...>::type;
     
     auto packaged_task = std::make_shared<std::packaged_task<return_type()>>(
         std::bind(std::forward<F>(task), std::forward<Args>(args)...)

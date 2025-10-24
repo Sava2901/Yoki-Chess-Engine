@@ -42,14 +42,15 @@ enum class TTReplacementStrategy : uint8_t {
 /**
  * @brief Transposition table entry structure
  * 
- * Optimized 16-byte cache-aligned structure for storing position evaluations.
+ * Thread-safe 16-byte cache-aligned structure for storing position evaluations.
+ * Uses atomic operations to prevent race conditions in multithreaded access.
  */
 struct alignas(16) TTEntry {
-    uint64_t key;           ///< 64-bit Zobrist hash key
-    uint32_t move;          ///< Packed move representation
-    int16_t score;          ///< Position evaluation score
-    uint8_t depth;          ///< Search depth for this entry
-    uint8_t flags;          ///< Packed bound_type (2 bits) and age (6 bits)
+    std::atomic<uint64_t> key;           ///< 64-bit Zobrist hash key (atomic)
+    std::atomic<uint32_t> move;          ///< Packed move representation (atomic)
+    std::atomic<int16_t> score;          ///< Position evaluation score (atomic)
+    std::atomic<uint8_t> depth;          ///< Search depth for this entry (atomic)
+    std::atomic<uint8_t> flags;          ///< Packed bound_type (2 bits) and age (6 bits) (atomic)
     
     /**
      * @brief Default constructor - creates empty entry
@@ -57,43 +58,137 @@ struct alignas(16) TTEntry {
     TTEntry() : key(0), move(0), score(0), depth(0), flags(0) {}
     
     /**
+     * @brief Copy constructor for atomic members
+     */
+    TTEntry(const TTEntry& other) 
+        : key(other.key.load(std::memory_order_acquire))
+        , move(other.move.load(std::memory_order_acquire))
+        , score(other.score.load(std::memory_order_acquire))
+        , depth(other.depth.load(std::memory_order_acquire))
+        , flags(other.flags.load(std::memory_order_acquire)) {}
+    
+    /**
+     * @brief Assignment operator for atomic members
+     */
+    TTEntry& operator=(const TTEntry& other) {
+        if (this != &other) {
+            key.store(other.key.load(std::memory_order_acquire), std::memory_order_release);
+            move.store(other.move.load(std::memory_order_acquire), std::memory_order_release);
+            score.store(other.score.load(std::memory_order_acquire), std::memory_order_release);
+            depth.store(other.depth.load(std::memory_order_acquire), std::memory_order_release);
+            flags.store(other.flags.load(std::memory_order_acquire), std::memory_order_release);
+        }
+        return *this;
+    }
+    
+    /**
      * @brief Check if entry is empty/unused
      * @return true if entry has never been used
      */
     bool is_empty() const {
-        return key == 0;
+        return key.load(std::memory_order_acquire) == 0;
     }
     
     /**
-     * @brief Get bound type from packed flags
+     * @brief Get bound type from packed flags (thread-safe)
      * @return Bound type (EXACT/LOWER/UPPER)
      */
     TTBoundType get_bound_type() const { 
-        return static_cast<TTBoundType>(flags & 0x3); 
+        return static_cast<TTBoundType>(flags.load(std::memory_order_acquire) & 0x3); 
     }
     
     /**
-     * @brief Get age from packed flags
+     * @brief Get age from packed flags (thread-safe)
      * @return Entry age (0-63)
      */
     uint8_t get_age() const { 
-        return (flags >> 2) & 0x3F; 
+        return (flags.load(std::memory_order_acquire) >> 2) & 0x3F; 
     }
     
     /**
-     * @brief Set bound type in packed flags
+     * @brief Set bound type in packed flags (thread-safe)
      * @param type Bound type to set
      */
     void set_bound_type(TTBoundType type) { 
-        flags = (flags & 0xFC) | static_cast<uint8_t>(type); 
+        uint8_t current_flags, new_flags;
+        do {
+            current_flags = flags.load(std::memory_order_acquire);
+            new_flags = (current_flags & 0xFC) | static_cast<uint8_t>(type);
+        } while (!flags.compare_exchange_weak(current_flags, new_flags, 
+                                            std::memory_order_release, 
+                                            std::memory_order_acquire));
     }
     
     /**
-     * @brief Set age in packed flags
+     * @brief Set age in packed flags (thread-safe)
      * @param age Age to set (0-63)
      */
     void set_age(uint8_t age) { 
-        flags = (flags & 0x3) | ((age & 0x3F) << 2); 
+        uint8_t current_flags, new_flags;
+        do {
+            current_flags = flags.load(std::memory_order_acquire);
+            new_flags = (current_flags & 0x3) | ((age & 0x3F) << 2);
+        } while (!flags.compare_exchange_weak(current_flags, new_flags, 
+                                            std::memory_order_release, 
+                                            std::memory_order_acquire));
+    }
+    
+    /**
+     * @brief Atomically store all entry data (thread-safe)
+     * @param zobrist_key Hash key
+     * @param packed_move Packed move data
+     * @param eval_score Evaluation score
+     * @param search_depth Search depth
+     * @param bound_type Bound type
+     * @param entry_age Entry age
+     */
+    void store_atomic(uint64_t zobrist_key, uint32_t packed_move, int16_t eval_score, 
+                     uint8_t search_depth, TTBoundType bound_type, uint8_t entry_age) {
+        // Store in specific order to ensure consistency
+        uint8_t new_flags = (static_cast<uint8_t>(bound_type) & 0x3) | ((entry_age & 0x3F) << 2);
+        
+        // Store non-key fields first
+        move.store(packed_move, std::memory_order_relaxed);
+        score.store(eval_score, std::memory_order_relaxed);
+        depth.store(search_depth, std::memory_order_relaxed);
+        flags.store(new_flags, std::memory_order_relaxed);
+        
+        // Store key last with release semantics to make entry visible
+        key.store(zobrist_key, std::memory_order_release);
+    }
+    
+    /**
+     * @brief Atomically load all entry data (thread-safe)
+     * @param zobrist_key Output hash key
+     * @param packed_move Output packed move data
+     * @param eval_score Output evaluation score
+     * @param search_depth Output search depth
+     * @param bound_type Output bound type
+     * @param entry_age Output entry age
+     * @return true if entry is valid and consistent
+     */
+    bool load_atomic(uint64_t& zobrist_key, uint32_t& packed_move, int16_t& eval_score,
+                    uint8_t& search_depth, TTBoundType& bound_type, uint8_t& entry_age) const {
+        // Load key first with acquire semantics
+        zobrist_key = key.load(std::memory_order_acquire);
+        if (zobrist_key == 0) {
+            return false; // Empty entry
+        }
+        
+        // Load other fields
+        packed_move = move.load(std::memory_order_relaxed);
+        eval_score = score.load(std::memory_order_relaxed);
+        search_depth = depth.load(std::memory_order_relaxed);
+        uint8_t flag_value = flags.load(std::memory_order_relaxed);
+        
+        // Verify key hasn't changed (detect concurrent writes)
+        if (key.load(std::memory_order_acquire) != zobrist_key) {
+            return false; // Entry was modified during read
+        }
+        
+        bound_type = static_cast<TTBoundType>(flag_value & 0x3);
+        entry_age = (flag_value >> 2) & 0x3F;
+        return true;
     }
 };
 
@@ -113,13 +208,13 @@ struct alignas(64) TTBucket {
     TTBucket() = default;
     
     /**
-     * @brief Find entry with matching key
+     * @brief Find entry with matching key (thread-safe)
      * @param key Zobrist hash key to search for
      * @return Pointer to matching entry or nullptr if not found
      */
     TTEntry* find_entry(uint64_t key) {
         for (int i = 0; i < BUCKET_SIZE; ++i) {
-            if (entries[i].key == key) {
+            if (entries[i].key.load(std::memory_order_acquire) == key) {
                 return &entries[i];
             }
         }
@@ -147,14 +242,14 @@ struct alignas(64) TTBucket {
     
 private:
     /**
-     * @brief Calculate replacement score for entry
+     * @brief Calculate replacement score for entry (thread-safe)
      * @param entry Entry to evaluate
      * @param current_age Current search age
      * @return Replacement score (higher = better candidate for replacement)
      */
     int replacement_score(const TTEntry& entry, uint8_t current_age) {
         int age_diff = (current_age - entry.get_age()) & 0x3F;
-        return (age_diff << 8) - entry.depth;  // Prefer old entries and shallow depths
+        return (age_diff << 8) - entry.depth.load(std::memory_order_acquire);  // Prefer old entries and shallow depths
     }
 };
 
@@ -405,6 +500,7 @@ private:
 };
 
 // Global transposition table instance
-extern TranspositionTable g_transposition_table;
+// Use function to get global transposition table instance (lazy initialization)
+TranspositionTable& get_global_transposition_table();
 
 #endif // TRANSPOSITION_TABLE_H

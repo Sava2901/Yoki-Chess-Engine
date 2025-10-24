@@ -4,6 +4,7 @@
 #include "../board/Board.h"
 #include "../board/Move.h"
 #include <cstdint>
+#include <mutex>
 #include <unordered_map>
 
 // Forward declarations
@@ -682,6 +683,7 @@ private:
     IncrementalEvalData incremental_data;
     ZobristKeys zobrist_keys;
     std::unordered_map<uint64_t, PawnHashEntry> pawn_hash_table;
+    mutable std::mutex pawn_hash_mutex_;  // Protect concurrent access to pawn hash table
     
     // Precomputed masks for efficient pawn evaluation
     Bitboard passed_pawn_masks[64][2]; // [square][color]

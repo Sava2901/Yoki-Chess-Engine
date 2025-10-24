@@ -14,5 +14,7 @@ target_include_directories(engine PUBLIC
 # Link with board library
 target_link_libraries(engine board)
 
-# Link with atomic library for thread-safe operations
-target_link_libraries(engine atomic)
+# Link with atomic library for thread-safe operations (only needed on some platforms)
+if(NOT WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_link_libraries(engine atomic)
+endif()

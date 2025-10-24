@@ -646,9 +646,13 @@ int Evaluation::evaluate_pawn_structure(const Board& board) {
         pawn_hash ^= pawns << color;
     }
     
-    auto it = pawn_hash_table.find(pawn_hash);
-    if (it != pawn_hash_table.end()) {
-        return it->second.score;
+    // Thread-safe hash table lookup
+    {
+        std::lock_guard<std::mutex> lock(pawn_hash_mutex_);
+        auto it = pawn_hash_table.find(pawn_hash);
+        if (it != pawn_hash_table.end()) {
+            return it->second.score;
+        }
     }
     
     // Calculate pawn structure score
@@ -656,11 +660,14 @@ int Evaluation::evaluate_pawn_structure(const Board& board) {
     score += evaluate_pawn_structure_for_color(board, Board::WHITE);
     score -= evaluate_pawn_structure_for_color(board, Board::BLACK);
 
-    // Store in pawn hash table
-    PawnHashEntry entry;
-    entry.key = pawn_hash;
-    entry.score = score;
-    pawn_hash_table[pawn_hash] = entry;
+    // Store in pawn hash table (thread-safe)
+    {
+        std::lock_guard<std::mutex> lock(pawn_hash_mutex_);
+        PawnHashEntry entry;
+        entry.key = pawn_hash;
+        entry.score = score;
+        pawn_hash_table[pawn_hash] = entry;
+    }
     
     return score;
 }
@@ -1941,6 +1948,7 @@ int Evaluation::get_phase_value(const Board& board) const {
 }
 
 void Evaluation::clear_pawn_hash_table() {
+    std::lock_guard<std::mutex> lock(pawn_hash_mutex_);
     pawn_hash_table.clear();
 }
 

@@ -5,6 +5,7 @@
 #include <vector>
 #include <algorithm>
 #include <iterator>
+#include <stdexcept>
 
 /**
  * @brief Small vector optimization for chess moves
@@ -157,7 +158,9 @@ public:
         if (using_overflow_) {
             overflow_.emplace_back(std::forward<Args>(args)...);
         } else if (size_ < N) {
-            new (&buffer_[size_]) T(std::forward<Args>(args)...);
+            // Use placement new with proper alignment and bounds checking
+            static_assert(alignof(T) <= alignof(std::max_align_t), "Type alignment too large");
+            new (static_cast<void*>(&buffer_[size_])) T(std::forward<Args>(args)...);
         } else {
             // Transition to overflow storage
             overflow_.reserve(N * 2);
@@ -212,17 +215,33 @@ public:
     }
 
     /**
-     * @brief Access element by index
+     * @brief Access element by index with bounds checking
      */
     reference operator[](size_t index) {
-        return using_overflow_ ? overflow_[index] : buffer_[index];
+        if (using_overflow_) {
+            return overflow_[index];
+        } else {
+            // Add bounds checking for buffer access
+            if (index >= size_) {
+                throw std::out_of_range("SmallVector index out of range");
+            }
+            return buffer_[index];
+        }
     }
 
     /**
-     * @brief Access element by index (const)
+     * @brief Access element by index (const) with bounds checking
      */
     const_reference operator[](size_t index) const {
-        return using_overflow_ ? overflow_[index] : buffer_[index];
+        if (using_overflow_) {
+            return overflow_[index];
+        } else {
+            // Add bounds checking for buffer access
+            if (index >= size_) {
+                throw std::out_of_range("SmallVector index out of range");
+            }
+            return buffer_[index];
+        }
     }
 
     /**

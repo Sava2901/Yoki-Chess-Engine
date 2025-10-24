@@ -119,28 +119,41 @@ TTResult TranspositionTable::probe(uint64_t zobrist_key, int depth, int alpha, i
     for (int i = 0; i < 4; ++i) {
         TTEntry& entry = bucket.entries[i];
         
+        // Use atomic load to safely read entry data
+        uint64_t entry_key;
+        uint32_t entry_move;
+        int16_t entry_score;
+        uint8_t entry_depth;
+        TTBoundType bound_type;
+        uint8_t entry_age;
+        
+        // Atomically load all entry data with consistency check
+        if (!entry.load_atomic(entry_key, entry_move, entry_score, entry_depth, bound_type, entry_age)) {
+            continue; // Entry is empty or being modified
+        }
+        
         // Check if this entry matches our position
-        if (entry.key == zobrist_key) {
+        if (entry_key == zobrist_key) {
             // Update age to mark as recently accessed
             entry.set_age(age_);
             
             // Adjust mate scores by ply distance
-            int adjusted_score = adjust_mate_score_from_tt(entry.score, ply);
+            int adjusted_score = adjust_mate_score_from_tt(entry_score, ply);
             
             TTResult result;
             result.found = true;
-            result.move.from_uint32(entry.move);
+            result.move.from_uint32(entry_move);
             result.score = adjusted_score;
-            result.depth = entry.depth;
-            result.bound_type = entry.get_bound_type();
-            result.age = entry.get_age();
+            result.depth = entry_depth;
+            result.bound_type = bound_type;
+            result.age = entry_age;
             
             
             // Check if we can use this entry for a cutoff
-            if (entry.depth >= depth) {
-                if (entry.get_bound_type() == TTBoundType::EXACT ||
-                    (entry.get_bound_type() == TTBoundType::LOWER_BOUND && adjusted_score >= beta) ||
-                    (entry.get_bound_type() == TTBoundType::UPPER_BOUND && adjusted_score <= alpha)) {
+            if (entry_depth >= depth) {
+                if (bound_type == TTBoundType::EXACT ||
+                    (bound_type == TTBoundType::LOWER_BOUND && adjusted_score >= beta) ||
+                    (bound_type == TTBoundType::UPPER_BOUND && adjusted_score <= alpha)) {
                     result.can_cutoff = true;
                     stats_.cutoffs++;
                     stats_.hits++;
@@ -212,15 +225,13 @@ void TranspositionTable::store(uint64_t zobrist_key, const Move& best_move, int 
         }
     }
     
-    // Store the entry
+    // Store the entry atomically to prevent race conditions
     if (replace_index != -1) {
         TTEntry& entry = bucket.entries[replace_index];
-        entry.key = zobrist_key;
-        entry.move = best_move.to_uint32();
-        entry.score = static_cast<int16_t>(std::clamp(adjusted_score, -32767, 32767));
-        entry.depth = static_cast<uint8_t>(std::clamp(depth, 0, 255));
-        entry.set_bound_type(bound_type);
-        entry.set_age(age_);
+        entry.store_atomic(zobrist_key, best_move.to_uint32(), 
+                          static_cast<int16_t>(std::clamp(adjusted_score, -32767, 32767)),
+                          static_cast<uint8_t>(std::clamp(depth, 0, 255)), 
+                          bound_type, age_);
     }
 }
 
@@ -253,7 +264,7 @@ int TranspositionTable::get_hashfull() const {
     }
     
     // Sample a portion of the table to estimate fullness
-    const size_t sample_size = std::min(bucket_count_, static_cast<size_t>(1000));
+    const size_t sample_size = (std::min)(bucket_count_, static_cast<size_t>(1000));
     size_t filled_entries = 0;
     size_t total_entries = 0;
     
@@ -393,5 +404,15 @@ void TranspositionTable::deallocate_memory() {
     table_.reset();
 }
 
-// Global transposition table instance
-TranspositionTable g_transposition_table(128); // Default 128MB (1 << 23 entries)
+// Global transposition table instance - use lazy initialization to avoid static initialization order issues
+TranspositionTable& get_global_transposition_table() {
+    static TranspositionTable instance(128); // Default 128MB - lazy initialization
+    static std::once_flag initialized;
+    
+    // Ensure thread-safe initialization
+    std::call_once(initialized, []() {
+        // Additional initialization if needed
+    });
+    
+    return instance;
+}

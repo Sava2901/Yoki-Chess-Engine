@@ -12,6 +12,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 #    set(CMAKE_CXX_FLAGS_DEBUG "-O0 -g -march=native -mbmi2")
 #endif()
 
+if(MSVC AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /MT")
+    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /MTd")
+endif()
+
+
 # Add include directories
 include_directories(include)
 
@@ -24,6 +30,12 @@ FetchContent_Declare(
 # For Windows: Prevent overriding the parent project's compiler/linker settings
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
+
+# Suppress Google Test warnings when using Clang on Windows
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND WIN32)
+    target_compile_options(gtest PRIVATE -Wno-undef -Wno-character-conversion)
+    target_compile_options(gtest_main PRIVATE -Wno-undef -Wno-character-conversion)
+endif()
 
 # Enable testing
 enable_testing()

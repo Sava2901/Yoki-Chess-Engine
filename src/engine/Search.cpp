@@ -253,18 +253,32 @@ SearchResult Search::iterative_deepening(const Board& board, int max_depth,
     
     // Iterative deepening loop
     try {
-        for (int depth = 1; depth <= max_depth; ++depth) {
-            if (should_stop()) {
-                break;
+        // Check if we should use Lazy SMP (parallel iterative deepening)
+        if (config.lazy_smp_instances > 1 && config.enable_parallel_search && config.thread_count > 1) {
+            // Use Lazy SMP - all threads do iterative deepening together
+            int score = lazy_smp_search(board, max_depth, config.lazy_smp_instances, best_pv);
+            
+            if (!best_pv.empty()) {
+                result.best_move = best_pv[0];
+                result.score = score;
+                result.principal_variation = best_pv;
+                // Depth is approximated since threads may reach different depths
+                result.depth = max_depth;
             }
+        } else {
+            // Standard iterative deepening with optional parallel root search
+            for (int depth = 1; depth <= max_depth; ++depth) {
+                if (should_stop()) {
+                    break;
+                }
 
-            std::vector<Move> current_pv;
-            int score;
+                std::vector<Move> current_pv;
+                int score;
             
             // Choose search strategy based on configuration
-            // With aggressive pruning reducing nodes by 70%, need depth 7+ for parallel benefit
-            if (config.thread_count > 1 && depth >= 7) {
-                // Use parallel root search at high depths where there's enough work
+            // Use parallel search at depth 6+ when multiple threads available (need sufficient work to overcome overhead)
+            if (config.enable_parallel_search && config.thread_count > 1 && depth >= 6) {
+                // Use parallel root search - improved to be more efficient
                 score = parallel_root_search(const_cast<Board&>(board), depth, -MATE_SCORE, MATE_SCORE, current_pv);
             } else if (config.enable_aspiration_windows && depth >= 5 && prev_score != 0 && abs(prev_score) < MATE_SCORE - 100) {
                 // Use aspiration windows for faster convergence (only at higher depths to avoid overhead)
@@ -288,6 +302,7 @@ SearchResult Search::iterative_deepening(const Board& board, int max_depth,
                 break; // Found mate, no need to search deeper
             }
             
+        }
         }
     } catch (const TimeUpException&) {
         // Time expired during search - gracefully return best move found so far
@@ -1289,10 +1304,76 @@ void Search::update_time_management() {
 }
 
 int Search::lazy_smp_search(const Board& board, int depth, int num_instances, std::vector<Move>& pv) {
-    // DISABLED: Lazy SMP has too much overhead (board copying, duplicate work)
-    // Fall back to single-threaded search
-    std::cerr << "Warning: Lazy SMP disabled due to poor performance. Using single-threaded search." << std::endl;
-    return alpha_beta(const_cast<Board&>(board), depth, -MATE_SCORE, MATE_SCORE, 0, pv);
+    // IMPROVED: Parallel Iterative Deepening Strategy
+    // Each thread runs iterative deepening independently but shares the transposition table
+    // This allows threads to benefit from each other's work while minimizing synchronization
+    
+    if (num_instances <= 1 || !config.enable_parallel_search) {
+        return alpha_beta(const_cast<Board&>(board), depth, -MATE_SCORE, MATE_SCORE, 0, pv);
+    }
+    
+    // Shared results across threads
+    struct ThreadResult {
+        Move best_move;
+        int score = -MATE_SCORE;
+        int depth_reached = 0;
+        std::vector<Move> pv;
+        std::mutex mutex;
+    };
+    
+    auto shared_result = std::make_shared<ThreadResult>();
+    
+    // Worker function: each thread does iterative deepening
+    auto worker = [this, shared_result, depth](Board worker_board, int thread_id) {
+        try {
+            // Each thread searches to the target depth using iterative deepening
+            // Thread 0 searches normally, others add slight variations to avoid duplicating work
+            int start_depth = (thread_id == 0) ? 1 : std::max(1, depth - 2);
+            
+            for (int d = start_depth; d <= depth && !should_stop(); ++d) {
+                std::vector<Move> local_pv;
+                int score = alpha_beta(worker_board, d, -MATE_SCORE, MATE_SCORE, 0, local_pv);
+                
+                if (!should_stop() && !local_pv.empty()) {
+                    // Update shared result if we found a better move
+                    std::lock_guard<std::mutex> lock(shared_result->mutex);
+                    if (d > shared_result->depth_reached || 
+                        (d == shared_result->depth_reached && score > shared_result->score)) {
+                        shared_result->best_move = local_pv[0];
+                        shared_result->score = score;
+                        shared_result->depth_reached = d;
+                        shared_result->pv = local_pv;
+                    }
+                }
+            }
+        } catch (...) {
+            // Handle exceptions gracefully
+        }
+    };
+    
+    // Launch worker threads
+    std::vector<std::future<void>> futures;
+    futures.reserve(num_instances);
+    
+    for (int i = 0; i < num_instances; ++i) {
+        Board thread_board = board;
+        futures.push_back(thread_pool->submit([worker, thread_board = std::move(thread_board), i]() mutable {
+            worker(thread_board, i);
+        }));
+    }
+    
+    // Wait for all threads
+    for (auto& f : futures) {
+        try {
+            f.get();
+        } catch (...) {
+            // Handle exceptions
+        }
+    }
+    
+    // Return best result found
+    pv = shared_result->pv;
+    return shared_result->score;
 }
 
 int Search::parallel_root_search(Board& board, int depth, int alpha, int beta, std::vector<Move>& pv) {
@@ -1327,11 +1408,10 @@ int Search::parallel_root_search(Board& board, int depth, int alpha, int beta, s
     }
     
     // Determine how many threads to use
-    // With ultra-low overhead, can use more threads effectively
-    int num_threads = std::min({config.thread_count, static_cast<int>(moves.size()), 8});
+    int num_threads = std::min(config.thread_count, static_cast<int>(moves.size()));
     
-    // Need sufficient work to justify thread overhead - depth 7+ with aggressive pruning
-    if (num_threads <= 1 || !config.enable_parallel_search || moves.size() < 2 || depth < 7) {
+    // Use parallel search at depth 6+ (need sufficient work to overcome overhead)
+    if (num_threads <= 1 || !config.enable_parallel_search || moves.size() < 2 || depth < 6) {
         // Single-threaded search - use PVS with apply_move for efficiency
         int best_score = -MATE_SCORE;
         Move best_move;
@@ -1339,7 +1419,6 @@ int Search::parallel_root_search(Board& board, int depth, int alpha, int beta, s
         
         for (size_t i = 0; i < moves.size() && !should_stop(); ++i) {
             const Move& move = moves[i].move;
-            // Use apply_move - faster, no legality check needed
             BitboardMoveUndoData undo = board.apply_move(move);
             
             std::vector<Move> current_pv;
@@ -1378,114 +1457,126 @@ int Search::parallel_root_search(Board& board, int depth, int alpha, int beta, s
         return best_score;
     }
     
-    // PARALLEL SEARCH: Ultra-optimized with proper memory safety
-    // Key optimizations:
-    // 1. Shared pointer for safe cross-thread access
-    // 2. NO atomics in hot path - each thread works independently
-    // 3. Pre-allocated results array - no dynamic allocation
-    // 4. Batch processing - minimal thread creation overhead
+    // SIMPLIFIED PARALLEL STRATEGY with reduced overhead
+    // Search first 2 moves on main thread, parallelize the rest
     
     struct MoveResult {
         int score = -MATE_SCORE;
         bool searched = false;
     };
     
-    // Use shared_ptr for thread-safe lifetime management
     auto results = std::make_shared<std::vector<MoveResult>>(moves.size());
     auto pvs = std::make_shared<std::vector<std::vector<Move>>>(moves.size());
     
-    // Search first move on main thread to get good alpha quickly
-    {
-        const Move& first_move = moves[0].move;
-        BitboardMoveUndoData undo = board.apply_move(first_move);
-        (*results)[0].score = -alpha_beta(board, depth - 1, -beta, -alpha, 1, (*pvs)[0]);
+    // Search first 2 moves sequentially to get good alpha
+    const size_t sequential_moves = std::min(static_cast<size_t>(2), moves.size());
+    int best_score = -MATE_SCORE;
+    size_t best_idx = 0;
+    
+    for (size_t i = 0; i < sequential_moves && !should_stop(); ++i) {
+        const Move& move = moves[i].move;
+        BitboardMoveUndoData undo = board.apply_move(move);
+        
+        if (i == 0) {
+            (*results)[i].score = -alpha_beta(board, depth - 1, -beta, -alpha, 1, (*pvs)[i]);
+        } else {
+            (*results)[i].score = -alpha_beta(board, depth - 1, -alpha - 1, -alpha, 1, (*pvs)[i]);
+            if ((*results)[i].score > alpha && (*results)[i].score < beta) {
+                (*pvs)[i].clear();
+                (*results)[i].score = -alpha_beta(board, depth - 1, -beta, -alpha, 1, (*pvs)[i]);
+            }
+        }
+        
         board.undo_move(undo);
-        (*results)[0].searched = true;
+        (*results)[i].searched = true;
         
-        if ((*results)[0].score > alpha) {
-            alpha = (*results)[0].score;
+        if ((*results)[i].score > best_score) {
+            best_score = (*results)[i].score;
+            best_idx = i;
         }
         
-        if ((*results)[0].score >= beta) {
+        if ((*results)[i].score > alpha) {
+            alpha = (*results)[i].score;
+        }
+        
+        if (alpha >= beta) {
             pv.clear();
-            pv.push_back(first_move);
-            pv.insert(pv.end(), (*pvs)[0].begin(), (*pvs)[0].end());
-            return (*results)[0].score;
+            pv.push_back(move);
+            pv.insert(pv.end(), (*pvs)[i].begin(), (*pvs)[i].end());
+            return (*results)[i].score;
         }
     }
     
-    // Distribute remaining moves to threads
-    const size_t remaining = moves.size() - 1;
-    if (remaining == 0) {
+    if (sequential_moves >= moves.size()) {
         pv.clear();
-        pv.push_back(moves[0].move);
-        pv.insert(pv.end(), (*pvs)[0].begin(), (*pvs)[0].end());
-        return (*results)[0].score;
+        pv.push_back(moves[best_idx].move);
+        pv.insert(pv.end(), (*pvs)[best_idx].begin(), (*pvs)[best_idx].end());
+        return best_score;
     }
     
-    // Use at most one thread per remaining move
+    // Parallel search remaining moves
+    const size_t remaining = moves.size() - sequential_moves;
     const int actual_threads = std::min(num_threads, static_cast<int>(remaining));
-    const size_t chunk_size = (remaining + actual_threads - 1) / actual_threads;
-    
-    // Store alpha for threads to use (after first move improves it)
     const int search_alpha = alpha;
     const int search_beta = beta;
     const int search_depth = depth;
     
-    // Lambda for thread work - captures shared_ptr for safe access
-    auto worker = [this, results, pvs, search_alpha, search_beta, search_depth](Board& local_board, const std::vector<MoveScore>& local_moves, int thread_id, size_t chunk_size) {
-        size_t start = 1 + thread_id * chunk_size;
-        size_t end = std::min(start + chunk_size, local_moves.size());
+    // Share moves vector with threads (read-only, safe)
+    auto moves_ptr = std::make_shared<std::vector<MoveScore>>(moves);
+    
+    auto worker = [this, results, pvs, search_alpha, search_beta, search_depth, moves_ptr](
+        Board local_board, size_t start_idx, size_t end_idx) {
         
-        for (size_t i = start; i < end && !should_stop(); ++i) {
-            const Move& move = local_moves[i].move;
-            
-            // Fast move application
+        for (size_t i = start_idx; i < end_idx && !should_stop(); ++i) {
+            const Move& move = (*moves_ptr)[i].move;
             BitboardMoveUndoData undo = local_board.apply_move(move);
             
-            // IMPORTANT: Use FULL window for parallel root search
-            // Null window PVS causes premature cutoffs when threads search independently
-            int score = -alpha_beta(local_board, search_depth - 1, -search_beta, -search_alpha, 1, (*pvs)[i]);
+            int score = -alpha_beta(local_board, search_depth - 1, -search_alpha - 1, -search_alpha, 1, (*pvs)[i]);
+            
+            if (!should_stop() && score > search_alpha && score < search_beta) {
+                (*pvs)[i].clear();
+                score = -alpha_beta(local_board, search_depth - 1, -search_beta, -search_alpha, 1, (*pvs)[i]);
+            }
             
             local_board.undo_move(undo);
-            
             (*results)[i].score = score;
             (*results)[i].searched = true;
         }
     };
     
-    // Launch threads with board copies
     std::vector<std::future<void>> futures;
     futures.reserve(actual_threads);
     
+    const size_t moves_per_thread = (remaining + actual_threads - 1) / actual_threads;
+    
     for (int t = 0; t < actual_threads; ++t) {
-        Board thread_board = board;  // Create board copy in parent scope
-        futures.push_back(thread_pool->submit([worker, t, chunk_size, thread_board = std::move(thread_board), &moves]() mutable {
-            worker(thread_board, moves, t, chunk_size);
+        size_t start_idx = sequential_moves + t * moves_per_thread;
+        size_t end_idx = std::min(start_idx + moves_per_thread, moves.size());
+        
+        if (start_idx >= moves.size()) break;
+        
+        Board thread_board = board;
+        futures.push_back(thread_pool->submit([worker, thread_board, start_idx, end_idx]() mutable {
+            worker(std::move(thread_board), start_idx, end_idx);
         }));
     }
     
-    // Wait for all threads (with exception handling)
     for (auto& f : futures) {
         try {
             f.get();
         } catch (...) {
-            // Silently handle exceptions (search may have been interrupted)
+            // Handle exceptions gracefully
         }
     }
     
-    // Collect best result (no locks needed - all writes are done)
-    int best_score = (*results)[0].score;
-    size_t best_idx = 0;
-    
-    for (size_t i = 1; i < moves.size(); ++i) {
+    // Collect best result
+    for (size_t i = 0; i < moves.size(); ++i) {
         if ((*results)[i].searched && (*results)[i].score > best_score) {
             best_score = (*results)[i].score;
             best_idx = i;
         }
     }
     
-    // Construct PV
     pv.clear();
     pv.push_back(moves[best_idx].move);
     pv.insert(pv.end(), (*pvs)[best_idx].begin(), (*pvs)[best_idx].end());

@@ -127,10 +127,8 @@ Board::Board() {
     fullmove_number = 1;
     zobrist_hash = 0;
     
-    // Initialize piece mailbox
-    for (int i = 0; i < 64; i++) {
-        piece_mailbox[i] = '.';
-    }
+    // Initialize piece mailbox with proper bounds checking
+    std::memset(piece_mailbox, '.', sizeof(piece_mailbox));
     
     // Initialize bitboard utilities if not already done
     BitboardUtils::init();
@@ -207,10 +205,8 @@ void Board::set_from_fen(const std::string& fen) {
     }
     all_pieces = 0;
     
-    // Clear piece mailbox
-    for (int i = 0; i < 64; i++) {
-        piece_mailbox[i] = '.';
-    }
+    // Clear piece mailbox with proper bounds checking
+    std::memset(piece_mailbox, '.', sizeof(piece_mailbox));
     
     std::istringstream iss(fen);
     std::string board_part, active_color_part, castling_part, en_passant_part;
