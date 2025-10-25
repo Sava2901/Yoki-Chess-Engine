@@ -865,9 +865,10 @@ private:
      * @param depth Search depth
      * @param num_instances Number of independent search instances
      * @param pv Principal variation output
+     * @param depth_reached Output parameter for actual depth reached
      * @return Best score found across all instances
      */
-    int lazy_smp_search(const Board& board, int depth, int num_instances, std::vector<Move>& pv);
+    int lazy_smp_search(const Board& board, int depth, int num_instances, std::vector<Move>& pv, int& depth_reached);
     
     /**
      * @brief Parallel root search - efficiently distribute root moves among threads
@@ -936,7 +937,7 @@ private:
     std::vector<std::vector<Move>> pv_table; ///< PV table for each ply
     
     // Constants
-    static constexpr int MATE_SCORE = 30000;     ///< Mate score
+    static constexpr int MATE_SCORE = 32000;     ///< Mate score (must match TranspositionTable::MATE_SCORE)
     static constexpr int MAX_PLY = 64;           ///< Maximum search ply (reduced to prevent stack overflow)
     static constexpr int MAX_QUIESCENCE_PLY = 16; ///< Maximum quiescence search depth
     static constexpr int FUTILITY_MARGIN = 100;  ///< Futility pruning margin

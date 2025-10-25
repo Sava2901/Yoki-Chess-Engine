@@ -256,14 +256,15 @@ SearchResult Search::iterative_deepening(const Board& board, int max_depth,
         // Check if we should use Lazy SMP (parallel iterative deepening)
         if (config.lazy_smp_instances > 1 && config.enable_parallel_search && config.thread_count > 1) {
             // Use Lazy SMP - all threads do iterative deepening together
-            int score = lazy_smp_search(board, max_depth, config.lazy_smp_instances, best_pv);
+            int actual_depth_reached = 0;
+            int score = lazy_smp_search(board, max_depth, config.lazy_smp_instances, best_pv, actual_depth_reached);
             
             if (!best_pv.empty()) {
                 result.best_move = best_pv[0];
                 result.score = score;
                 result.principal_variation = best_pv;
-                // Depth is approximated since threads may reach different depths
-                result.depth = max_depth;
+                // Use actual depth reached by the threads, not the target depth
+                result.depth = actual_depth_reached;
             }
         } else {
             // Standard iterative deepening with optional parallel root search
@@ -1303,12 +1304,13 @@ void Search::update_time_management() {
     current_stats.time_elapsed_ms = static_cast<double>(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count());
 }
 
-int Search::lazy_smp_search(const Board& board, int depth, int num_instances, std::vector<Move>& pv) {
+int Search::lazy_smp_search(const Board& board, int depth, int num_instances, std::vector<Move>& pv, int& depth_reached) {
     // IMPROVED: Parallel Iterative Deepening Strategy
     // Each thread runs iterative deepening independently but shares the transposition table
     // This allows threads to benefit from each other's work while minimizing synchronization
     
     if (num_instances <= 1 || !config.enable_parallel_search) {
+        depth_reached = depth;
         return alpha_beta(const_cast<Board&>(board), depth, -MATE_SCORE, MATE_SCORE, 0, pv);
     }
     
@@ -1373,6 +1375,7 @@ int Search::lazy_smp_search(const Board& board, int depth, int num_instances, st
     
     // Return best result found
     pv = shared_result->pv;
+    depth_reached = shared_result->depth_reached;
     return shared_result->score;
 }
 

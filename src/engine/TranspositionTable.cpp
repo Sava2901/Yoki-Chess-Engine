@@ -90,7 +90,19 @@ bool TranspositionTable::resize(size_t size_mb) {
 // Clear the transposition table
 void TranspositionTable::clear() {
     if (table_) {
-        std::memset(table_.get(), 0, bucket_count_ * sizeof(TTBucket));
+        // Properly initialize each bucket instead of using memset
+        // This is necessary because TTBucket contains atomic types which are not trivially copyable
+        for (size_t i = 0; i < bucket_count_; ++i) {
+            TTBucket& bucket = table_[i];
+            for (int j = 0; j < TTBucket::BUCKET_SIZE; ++j) {
+                TTEntry& entry = bucket.entries[j];
+                entry.key.store(0, std::memory_order_relaxed);
+                entry.move.store(0, std::memory_order_relaxed);
+                entry.score.store(0, std::memory_order_relaxed);
+                entry.depth.store(0, std::memory_order_relaxed);
+                entry.flags.store(0, std::memory_order_relaxed);
+            }
+        }
         
         // Reset statistics
         stats_.probes = 0;
