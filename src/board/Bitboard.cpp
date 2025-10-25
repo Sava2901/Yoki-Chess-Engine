@@ -15,6 +15,10 @@ std::array<Bitboard, 64> black_pawn_attacks_table;
 uint8_t PopCnt16[1 << 16];
 uint8_t SquareDistance[64][64];
 
+// Additional lookup tables
+Bitboard BetweenBB[64][64];
+Bitboard LineBB[64][64];
+
 // Internal state tracking
 static bool is_initialized = false;
 
@@ -121,6 +125,35 @@ void BitboardUtils::init() {
     init_knight_attacks();
     init_king_attacks();
     init_pawn_attacks();
+    
+    // Initialize BetweenBB and LineBB tables
+    for (Square s1 = A1; s1 <= H8; ++s1) {
+        for (Square s2 = A1; s2 <= H8; ++s2) {
+            BetweenBB[s1][s2] = 0;
+            LineBB[s1][s2] = 0;
+        }
+    }
+    
+    // Initialize BetweenBB for squares on same rank, file, or diagonal
+    for (Square s1 = A1; s1 <= H8; ++s1) {
+        for (Square s2 = A1; s2 <= H8; ++s2) {
+            if (s1 == s2) continue;
+            
+            Bitboard snipers = (BitboardUtils::bishop_attacks(s1, 0) & BitboardUtils::bishop_attacks(s2, 0)) |
+                               (BitboardUtils::rook_attacks(s1, 0) & BitboardUtils::rook_attacks(s2, 0));
+            
+            if (snipers) {
+                LineBB[s1][s2] = (BitboardUtils::bishop_attacks(s1, 0) & BitboardUtils::bishop_attacks(s2, 0)) |
+                                 (BitboardUtils::rook_attacks(s1, 0) & BitboardUtils::rook_attacks(s2, 0)) |
+                                 square_bb(s1) | square_bb(s2);
+                
+                BetweenBB[s1][s2] = BitboardUtils::bishop_attacks(s1, square_bb(s2)) & BitboardUtils::bishop_attacks(s2, square_bb(s1));
+                if (!BetweenBB[s1][s2]) {
+                    BetweenBB[s1][s2] = BitboardUtils::rook_attacks(s1, square_bb(s2)) & BitboardUtils::rook_attacks(s2, square_bb(s1));
+                }
+            }
+        }
+    }
     
     is_initialized = true;
 }

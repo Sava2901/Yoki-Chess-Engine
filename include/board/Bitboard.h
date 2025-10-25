@@ -116,6 +116,10 @@ namespace BitboardUtils {
 extern uint8_t PopCnt16[1 << 16];
 extern uint8_t SquareDistance[SQUARE_NB][SQUARE_NB];
 
+// Additional lookup tables for advanced features
+extern Bitboard BetweenBB[SQUARE_NB][SQUARE_NB];
+extern Bitboard LineBB[SQUARE_NB][SQUARE_NB];
+
 // Magic structure for magic bitboards
 struct Magic {
     Bitboard  mask;
@@ -126,7 +130,7 @@ struct Magic {
 #endif
 
     // Compute the attack's index using the 'magic bitboards' approach
-    unsigned index(Bitboard occupied) const {
+    [[nodiscard]] unsigned index(Bitboard occupied) const {
 #ifdef USE_PEXT
         return unsigned(pext(occupied, mask));
 #else
@@ -139,7 +143,7 @@ struct Magic {
 #endif
     }
 
-    Bitboard attacks_bb(Bitboard occupied) const { 
+    [[nodiscard]] Bitboard attacks_bb(Bitboard occupied) const {
         return attacks[index(occupied)]; 
     }
 };
@@ -317,6 +321,16 @@ inline Bitboard pawn_attacks(int square, bool is_white) {
     return is_white ? white_pawn_attacks_table[square] : black_pawn_attacks_table[square];
 }
 
+// Get bitboard of squares between two squares (exclusive)
+inline Bitboard between_squares(int sq1, int sq2) {
+    return BetweenBB[sq1][sq2];
+}
+
+// Check if three squares are aligned (on same rank, file, or diagonal)
+inline bool aligned(int sq1, int sq2, int sq3) {
+    return LineBB[sq1][sq2] & (1ULL << sq3);
+}
+
 // ========== Bitboard Utilities Namespace ==========
 
 namespace BitboardUtils {
@@ -375,6 +389,8 @@ inline Bitboard queen_attacks(int square, Bitboard occupancy) { return ::queen_a
 inline Bitboard knight_attacks(int square) { return ::knight_attacks(square); }
 inline Bitboard king_attacks(int square) { return ::king_attacks(square); }
 inline Bitboard pawn_attacks(int square, bool is_white) { return ::pawn_attacks(square, is_white); }
+inline Bitboard between_squares(int sq1, int sq2) { return ::between_squares(sq1, sq2); }
+inline bool aligned(int sq1, int sq2, int sq3) { return ::aligned(sq1, sq2, sq3); }
 
 } // namespace BitboardUtils
 
