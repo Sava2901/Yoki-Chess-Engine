@@ -6,35 +6,6 @@
 #include "Bitboard.h"
 
 /**
- * @brief Magic bitboard structure for sliding piece attack generation
- * 
- * Contains the magic bitboard data needed for efficient sliding piece
- * attack generation using the magic bitboard technique.
- */
-struct Magic {
-    Bitboard mask;
-    Bitboard magic;
-    Bitboard* attacks;
-    int shift;
-};
-
-/**
- * @brief Magic bitboard arrays for bishop attack generation
- * 
- * Pre-computed magic bitboard data for all 64 squares, used for
- * efficient sliding piece attack generation.
- */
-extern Magic bishop_magics[64];
-
-/**
- * @brief Magic bitboard arrays for rook attack generation
- * 
- * Pre-computed magic bitboard data for all 64 squares, used for
- * efficient sliding piece attack generation.
- */
-extern Magic rook_magics[64];
-
-/**
  * BitboardMoveGenerator - High-performance move generation using bitboards
  * This class provides O(1) sliding piece move generation using magic bitboards
  */

@@ -4,89 +4,100 @@
 #include <random>
 #include <bitset>
 #include <initializer_list>
+#include <cstring>
 
-// Static member initialization
-BitboardUtils::Magic BitboardUtils::Magics[64][2];
-std::array<Bitboard, 64> BitboardUtils::rook_magics;
-std::array<Bitboard, 64> BitboardUtils::bishop_magics;
-std::array<int, 64> BitboardUtils::rook_shifts;
-std::array<int, 64> BitboardUtils::bishop_shifts;
-std::array<Bitboard*, 64> BitboardUtils::rook_attacks_table;
-std::array<Bitboard*, 64> BitboardUtils::bishop_attacks_table;
-std::array<Bitboard, 64> BitboardUtils::knight_attacks_table;
-std::array<Bitboard, 64> BitboardUtils::king_attacks_table;
-std::array<Bitboard, 64> BitboardUtils::white_pawn_attacks_table;
-std::array<Bitboard, 64> BitboardUtils::black_pawn_attacks_table;
-uint8_t BitboardUtils::PopCnt16[1 << 16];
-uint8_t BitboardUtils::SquareDistance[64][64];
-bool BitboardUtils::is_initialized = false;
+// Global lookup tables
+Magic Magics[64][2];
+std::array<Bitboard, 64> knight_attacks_table;
+std::array<Bitboard, 64> king_attacks_table;
+std::array<Bitboard, 64> white_pawn_attacks_table;
+std::array<Bitboard, 64> black_pawn_attacks_table;
+uint8_t PopCnt16[1 << 16];
+uint8_t SquareDistance[64][64];
 
-// Magic numbers for rook attacks (pre-computed)
-static constexpr std::array<Bitboard, 64> ROOK_MAGICS = {
-    0x0080001020400080ULL, 0x0040001000200040ULL, 0x0080081000200080ULL, 0x0080040800100080ULL,
-    0x0080020400080080ULL, 0x0080010200040080ULL, 0x0080008001000200ULL, 0x0080002040800100ULL,
-    0x0000800020400080ULL, 0x0000400020005000ULL, 0x0000801000200080ULL, 0x0000800800100080ULL,
-    0x0000800400080080ULL, 0x0000800200040080ULL, 0x0000800100020080ULL, 0x0000800040800100ULL,
-    0x0000208000400080ULL, 0x0000404000201000ULL, 0x0000808010002000ULL, 0x0000808008001000ULL,
-    0x0000808004000800ULL, 0x0000808002000400ULL, 0x0000010100020004ULL, 0x0000020000408104ULL,
-    0x0000208080004000ULL, 0x0000200040005000ULL, 0x0000100080200080ULL, 0x0000080080100080ULL,
-    0x0000040080080080ULL, 0x0000020080040080ULL, 0x0000010080800200ULL, 0x0000800080004100ULL,
-    0x0000204000800080ULL, 0x0000200040401000ULL, 0x0000100080802000ULL, 0x0000080080801000ULL,
-    0x0000040080800800ULL, 0x0000020080800400ULL, 0x0000020001010004ULL, 0x0000800040800100ULL,
-    0x0000204000808000ULL, 0x0000200040008080ULL, 0x0000100020008080ULL, 0x0000080010008080ULL,
-    0x0000040008008080ULL, 0x0000020004008080ULL, 0x0000010002008080ULL, 0x0000004081020004ULL,
-    0x0000204000800080ULL, 0x0000200040008080ULL, 0x0000100020008080ULL, 0x0000080010008080ULL,
-    0x0000040008008080ULL, 0x0000020004008080ULL, 0x0000800100020080ULL, 0x0000800041000080ULL,
-    0x00FFFCDDFCED714AULL, 0x007FFCDDFCED714AULL, 0x003FFFCDFFD88096ULL, 0x0000040810002101ULL,
-    0x0001000204080011ULL, 0x0001000204000801ULL, 0x0001000082000401ULL, 0x0001FFFAABFAD1A2ULL
+// Internal state tracking
+static bool is_initialized = false;
+
+// Attack tables storage 
+static Bitboard rook_table[0x19000];   // To store rook attacks
+static Bitboard bishop_table[0x1480];  // To store bishop attacks
+
+// PRNG for magic number generation
+class PRNG {
+    uint64_t s;
+    
+    uint64_t rand64() {
+        s ^= s >> 12;
+        s ^= s << 25;
+        s ^= s >> 27;
+        return s * 2685821657736338717LL;
+    }
+    
+public:
+    PRNG(uint64_t seed) : s(seed) {}
+    
+    template<typename T>
+    T sparse_rand() {
+        return T(rand64() & rand64() & rand64());
+    }
 };
 
-// Magic numbers for bishop attacks (from Stockfish)
-static constexpr std::array<Bitboard, 64> BISHOP_MAGICS = {
-    0x89a1121896040240ULL, 0x2004844802002010ULL, 0x2068080051921000ULL, 0x62880a0220200808ULL,
-    0x4042004402810011ULL, 0x100822020200011ULL,  0xc00444222012000aULL, 0x28808801216001ULL,
-    0x400492088408100ULL,  0x201c401040c0084ULL,  0x840800910a0010ULL,   0x82080240060ULL,
-    0x2000840504006000ULL, 0x30010c4108405004ULL, 0x1008005410080802ULL, 0x8144042209100900ULL,
-    0x208081020014400ULL,  0x4800201208ca00ULL,   0xf18140408012008ULL,  0x1004002802102001ULL,
-    0x841000820080811ULL,  0x40200200a42008ULL,   0x800054042000ULL,     0x88010400410c9000ULL,
-    0x520040470104290ULL,  0x1004040051500081ULL, 0x2002081833080021ULL, 0x400c00c010142ULL,
-    0x941408200c002000ULL, 0x658810000806011ULL,  0x188071040440a00ULL,  0x4800404002011c00ULL,
-    0x104442040404200ULL,  0x511080202091021ULL,  0x4022401120400ULL,    0x80c0040400080120ULL,
-    0x8040010040820802ULL, 0x480810700020090ULL,  0x102008e00040242ULL,  0x809005202050100ULL,
-    0x8002024220104080ULL, 0x431008804142000ULL,  0x19001802081400ULL,   0x200014208040080ULL,
-    0x3308082008200100ULL, 0x41010500040c020ULL,  0x4012020c04210308ULL, 0x208220a202004080ULL,
-    0x111040120082000ULL,  0x6803040141280a00ULL, 0x2101004202410000ULL, 0x8200000041108022ULL,
-    0x21082088000ULL,      0x2410204010040ULL,    0x40100400809000ULL,   0x822088220820214ULL,
-    0x40808090012004ULL,   0x910224040218c9ULL,   0x402814422015008ULL,  0x90014004842410ULL,
-    0x1000042304105ULL,    0x10008830412a00ULL,   0x2520081090008908ULL, 0x40102000a0a60140ULL
-};
+// Helper function to compute sliding attacks on-the-fly
+namespace {
 
-// Shift values for magic bitboards
-static const std::array<int, 64> ROOK_SHIFTS = {
-    52, 53, 53, 53, 53, 53, 53, 52,
-    53, 54, 54, 54, 54, 54, 54, 53,
-    53, 54, 54, 54, 54, 54, 54, 53,
-    53, 54, 54, 54, 54, 54, 54, 53,
-    53, 54, 54, 54, 54, 54, 54, 53,
-    53, 54, 54, 54, 54, 54, 54, 53,
-    53, 54, 54, 54, 54, 54, 54, 53,
-    52, 53, 53, 53, 53, 53, 53, 52
-};
+Bitboard safe_destination(Square s, int step) {
+    Square to = Square(int(s) + step);
+    int from_rank = get_rank(int(s));
+    int from_file = get_file(int(s));
+    int to_rank = get_rank(int(to));
+    int to_file = get_file(int(to));
+    
+    if (int(to) < 0 || int(to) >= 64) return 0;
+    
+    int rank_dist = std::abs(to_rank - from_rank);
+    int file_dist = std::abs(to_file - from_file);
+    int distance = std::max(rank_dist, file_dist);
+    
+    return distance <= 2 ? (1ULL << int(to)) : 0ULL;
+}
 
-static const std::array<int, 64> BISHOP_SHIFTS = {
-    58, 59, 59, 59, 59, 59, 59, 58,
-    59, 59, 59, 59, 59, 59, 59, 59,
-    59, 59, 57, 57, 57, 57, 59, 59,
-    59, 59, 57, 55, 55, 57, 59, 59,
-    59, 59, 57, 55, 55, 57, 59, 59,
-    59, 59, 57, 57, 57, 57, 59, 59,
-    59, 59, 59, 59, 59, 59, 59, 59,
-    58, 59, 59, 59, 59, 59, 59, 58
-};
+Bitboard sliding_attack(PieceType pt, Square sq, Bitboard occupied) {
+    Bitboard attacks = 0;
+    int directions[4];
+    
+    if (pt == ROOK) {
+        // NORTH, SOUTH, EAST, WEST
+        directions[0] = 8;
+        directions[1] = -8;
+        directions[2] = 1;
+        directions[3] = -1;
+    } else {
+        // NORTH_EAST, SOUTH_EAST, SOUTH_WEST, NORTH_WEST
+        directions[0] = 9;
+        directions[1] = -7;
+        directions[2] = -9;
+        directions[3] = 7;
+    }
+    
+    for (int i = 0; i < 4; i++) {
+        int step = directions[i];
+        Square s = sq;
+        
+        while (true) {
+            Bitboard dest = safe_destination(s, step);
+            if (!dest) break;
+            
+            s = Square(int(s) + step);
+            attacks |= (1ULL << int(s));
+            
+            if (occupied & (1ULL << int(s))) break;
+        }
+    }
+    
+    return attacks;
+}
 
-// Attack tables storage - aligned for better cache performance
-alignas(64) static Bitboard rook_table[102400];
-alignas(64) static Bitboard bishop_table[5248];
+}  // anonymous namespace
 
 void BitboardUtils::init() {
     if (is_initialized) return;
@@ -96,21 +107,17 @@ void BitboardUtils::init() {
         PopCnt16[i] = uint8_t(std::bitset<16>(i).count());
     
     // Initialize SquareDistance lookup table
-    for (int s1 = 0; s1 < 64; ++s1)
-        for (int s2 = 0; s2 < 64; ++s2) {
-            int file_dist = std::abs(get_file(s1) - get_file(s2));
-            int rank_dist = std::abs(get_rank(s1) - get_rank(s2));
+    for (Square s1 = A1; s1 <= H8; ++s1)
+        for (Square s2 = A1; s2 <= H8; ++s2) {
+            int file_dist = std::abs(get_file(int(s1)) - get_file(int(s2)));
+            int rank_dist = std::abs(get_rank(int(s1)) - get_rank(int(s2)));
             SquareDistance[s1][s2] = std::max(file_dist, rank_dist);
         }
     
-    // Copy pre-computed magic numbers
-    rook_magics = ROOK_MAGICS;
-    bishop_magics = BISHOP_MAGICS;
-    rook_shifts = ROOK_SHIFTS;
-    bishop_shifts = BISHOP_SHIFTS;
+    // Initialize magic bitboards
+    init_magics(ROOK, rook_table, Magics);
+    init_magics(BISHOP, bishop_table, Magics);
     
-    init_rook_attacks();
-    init_bishop_attacks();
     init_knight_attacks();
     init_king_attacks();
     init_pawn_attacks();
@@ -118,68 +125,78 @@ void BitboardUtils::init() {
     is_initialized = true;
 }
 
-void BitboardUtils::init_rook_attacks() {
-    int table_index = 0;
-    
-    for (int square = 0; square < 64; square++) {
-        rook_attacks_table[square] = &rook_table[table_index];
-        
-        Bitboard mask = rook_mask(square);
-        int shift = rook_shifts[square];
-        int num_bits = popcount(mask);
-        
-        for (int i = 0; i < (1 << num_bits); i++) {
-            Bitboard occupancy = 0;
-            Bitboard temp_mask = mask;
-            
-            // Generate occupancy variation
-            for (int bit = 0; bit < num_bits; bit++) {
-                int lsb_square = pop_lsb(temp_mask);
-                if (i & (1 << bit)) {
-                    set_bit(occupancy, lsb_square);
-                }
-            }
-            
-            int magic_index = (occupancy * rook_magics[square]) >> shift;
-            rook_attacks_table[square][magic_index] = generate_rook_attacks_slow(square, occupancy);
-        }
-        
-        table_index += (1 << (64 - shift));
-    }
-}
+void BitboardUtils::init_magics(PieceType pt, Bitboard table[], Magic magics[][2]) {
+    // Optimal PRNG seeds to pick the correct magics in the shortest time
+    int seeds[][8] = {{8977, 44560, 54343, 38998, 5731, 95205, 104912, 17020},
+                      {728, 10316, 55013, 32803, 12281, 15100, 16645, 255}};
 
-void BitboardUtils::init_bishop_attacks() {
-    int table_index = 0;
-    
-    for (int square = 0; square < 64; square++) {
-        bishop_attacks_table[square] = &bishop_table[table_index];
+    Bitboard occupancy[4096];
+    Bitboard reference[4096];
+    int epoch[4096] = {};
+    int cnt = 0;
+    int size = 0;
+
+    for (Square s = A1; s <= H8; ++s) {
+        // Board edges are not considered in the relevant occupancies
+        Bitboard rank1 = 0xFFULL;
+        Bitboard rank8 = 0xFF00000000000000ULL;
+        Bitboard fileA = 0x0101010101010101ULL;
+        Bitboard fileH = 0x8080808080808080ULL;
         
-        Bitboard mask = bishop_mask(square);
-        int shift = bishop_shifts[square];
-        int num_bits = popcount(mask);
+        Bitboard rank_bb_s = rank1 << (8 * get_rank(int(s)));
+        Bitboard file_bb_s = fileA << get_file(int(s));
         
-        // Clear the table first
-        for (int i = 0; i < (1 << (64 - shift)); i++) {
-            bishop_attacks_table[square][i] = 0;
-        }
+        Bitboard edges = ((rank1 | rank8) & ~rank_bb_s) | ((fileA | fileH) & ~file_bb_s);
+
+        // Given a square 's', the mask is the bitboard of sliding attacks from
+        // 's' computed on an empty board. The index must be big enough to contain
+        // all the attacks for each possible subset of the mask.
+        Magic& m = magics[s][pt];
+        m.mask = sliding_attack(pt, s, 0) & ~edges;
         
-        for (int i = 0; i < (1 << num_bits); i++) {
-            Bitboard occupancy = 0;
-            Bitboard temp_mask = mask;
+#ifndef USE_PEXT
+        m.shift = 64 - popcount(m.mask);
+#endif
+
+        // Set the offset for the attacks table of the square
+        m.attacks = (s == A1) ? table : magics[int(s) - 1][pt].attacks + size;
+        size = 0;
+
+        // Use Carry-Rippler trick to enumerate all subsets of mask
+        Bitboard b = 0;
+        do {
+            occupancy[size] = b;
+            reference[size] = sliding_attack(pt, s, b);
             
-            // Generate occupancy variation
-            for (int bit = 0; bit < num_bits; bit++) {
-                int lsb_square = pop_lsb(temp_mask);
-                if (i & (1 << bit)) {
-                    set_bit(occupancy, lsb_square);
+#ifdef USE_PEXT
+            m.attacks[pext(b, m.mask)] = reference[size];
+#endif
+            size++;
+            b = (b - m.mask) & m.mask;
+        } while (b);
+
+#ifndef USE_PEXT
+        // Find a magic for square 's' picking up an (almost) random number
+        // until we find the one that passes the verification test.
+        PRNG rng(seeds[pt][get_rank(int(s))]);
+
+        for (int i = 0; i < size;) {
+            // Generate magic candidate
+            for (m.magic = 0; popcount((m.magic * m.mask) >> 56) < 6;)
+                m.magic = rng.sparse_rand<Bitboard>();
+
+            for (++cnt, i = 0; i < size; ++i) {
+                unsigned idx = m.index(occupancy[i]);
+
+                if (epoch[idx] < cnt) {
+                    epoch[idx] = cnt;
+                    m.attacks[idx] = reference[i];
+                } else if (m.attacks[idx] != reference[i]) {
+                    break;
                 }
             }
-            
-            int magic_index = (occupancy * bishop_magics[square]) >> shift;
-            bishop_attacks_table[square][magic_index] = generate_bishop_attacks_slow(square, occupancy);
         }
-        
-        table_index += (1 << (64 - shift));
+#endif
     }
 }
 
@@ -256,154 +273,6 @@ void BitboardUtils::init_pawn_attacks() {
         white_pawn_attacks_table[square] = white_attacks;
         black_pawn_attacks_table[square] = black_attacks;
     }
-}
-
-Bitboard BitboardUtils::rook_mask(int square) {
-    Bitboard mask = 0;
-    int rank = get_rank(square);
-    int file = get_file(square);
-    
-    // Horizontal mask (excluding edges)
-    for (int f = 1; f < 7; f++) {
-        if (f != file) {
-            set_bit(mask, square_index(rank, f));
-        }
-    }
-    
-    // Vertical mask (excluding edges)
-    for (int r = 1; r < 7; r++) {
-        if (r != rank) {
-            set_bit(mask, square_index(r, file));
-        }
-    }
-    
-    return mask;
-}
-
-Bitboard BitboardUtils::bishop_mask(int square) {
-    Bitboard mask = 0;
-    int rank = get_rank(square);
-    int file = get_file(square);
-    
-    // Diagonal directions
-    int directions[4][2] = {{-1, -1}, {-1, 1}, {1, -1}, {1, 1}};
-    
-    for (int dir = 0; dir < 4; dir++) {
-        int r = rank + directions[dir][0];
-        int f = file + directions[dir][1];
-        
-        while (r > 0 && r < 7 && f > 0 && f < 7) {
-            set_bit(mask, square_index(r, f));
-            r += directions[dir][0];
-            f += directions[dir][1];
-        }
-    }
-    
-    return mask;
-}
-
-Bitboard BitboardUtils::generate_rook_attacks_slow(int square, Bitboard occupancy) {
-    Bitboard attacks = 0;
-    int rank = get_rank(square);
-    int file = get_file(square);
-    
-    // Horizontal directions
-    for (int f = file + 1; f < 8; f++) {
-        int target_square = square_index(rank, f);
-        set_bit(attacks, target_square);
-        if (get_bit(occupancy, target_square)) break;
-    }
-    
-    for (int f = file - 1; f >= 0; f--) {
-        int target_square = square_index(rank, f);
-        set_bit(attacks, target_square);
-        if (get_bit(occupancy, target_square)) break;
-    }
-    
-    // Vertical directions
-    for (int r = rank + 1; r < 8; r++) {
-        int target_square = square_index(r, file);
-        set_bit(attacks, target_square);
-        if (get_bit(occupancy, target_square)) break;
-    }
-    
-    for (int r = rank - 1; r >= 0; r--) {
-        int target_square = square_index(r, file);
-        set_bit(attacks, target_square);
-        if (get_bit(occupancy, target_square)) break;
-    }
-    
-    return attacks;
-}
-
-Bitboard BitboardUtils::generate_bishop_attacks_slow(int square, Bitboard occupancy) {
-    Bitboard attacks = 0;
-    int rank = get_rank(square);
-    int file = get_file(square);
-    
-    // Diagonal directions
-    int directions[4][2] = {{-1, -1}, {-1, 1}, {1, -1}, {1, 1}};
-    
-    for (int dir = 0; dir < 4; dir++) {
-        int r = rank + directions[dir][0];
-        int f = file + directions[dir][1];
-        
-        while (r >= 0 && r < 8 && f >= 0 && f < 8) {
-            int target_square = square_index(r, f);
-            set_bit(attacks, target_square);
-            if (get_bit(occupancy, target_square)) break;
-            r += directions[dir][0];
-            f += directions[dir][1];
-        }
-    }
-    
-    return attacks;
-}
-
-Bitboard BitboardUtils::rook_attacks(int square, Bitboard occupancy) {
-#ifdef USE_PEXT
-    if (HasPext) {
-        return rook_attacks_pext(square, occupancy);
-    }
-#endif
-    Bitboard key = (occupancy & rook_mask(square)) * rook_magics[square] >> rook_shifts[square];
-    return rook_attacks_table[square][key];
-}
-
-Bitboard BitboardUtils::bishop_attacks(int square, Bitboard occupancy) {
-#ifdef USE_PEXT
-    if (HasPext) {
-        return bishop_attacks_pext(square, occupancy);
-    }
-#endif
-    Bitboard key = (occupancy & bishop_mask(square)) * bishop_magics[square] >> bishop_shifts[square];
-    return bishop_attacks_table[square][key];
-}
-
-#ifdef USE_PEXT
-Bitboard BitboardUtils::rook_attacks_pext(int square, Bitboard occupancy) {
-    return rook_attacks_table[square][pext(occupancy, rook_mask(square))];
-}
-
-Bitboard BitboardUtils::bishop_attacks_pext(int square, Bitboard occupancy) {
-    return bishop_attacks_table[square][pext(occupancy, bishop_mask(square))];
-}
-#endif
-
-Bitboard BitboardUtils::queen_attacks(int square, Bitboard occupancy) {
-    return rook_attacks(square, occupancy) | bishop_attacks(square, occupancy);
-}
-
-Bitboard BitboardUtils::knight_attacks(int square) {
-    return knight_attacks_table[square];
-}
-
-Bitboard BitboardUtils::king_attacks(int square) {
-    return king_attacks_table[square];
-}
-
-Bitboard BitboardUtils::pawn_attacks(int square, bool is_white) {
-    return is_white ? white_pawn_attacks_table[square] : black_pawn_attacks_table[square];
 }
 
 std::string BitboardUtils::bitboard_to_string(Bitboard bb) {
