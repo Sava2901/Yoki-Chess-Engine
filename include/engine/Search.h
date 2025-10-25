@@ -57,6 +57,9 @@ struct SearchStats {
     std::atomic<uint64_t> check_extensions{0};      ///< Check extensions applied (atomic for thread-safety)
     std::atomic<uint64_t> singular_extensions{0};   ///< Singular extensions applied (atomic for thread-safety)
     std::atomic<uint64_t> recapture_extensions{0};  ///< Recapture extensions applied (atomic for thread-safety)
+    std::atomic<uint64_t> passed_pawn_extensions{0}; ///< Passed pawn extensions applied (atomic for thread-safety)
+    std::atomic<uint64_t> mate_threat_extensions{0}; ///< Mate threat extensions applied (atomic for thread-safety)
+    std::atomic<uint64_t> iid_attempts{0};          ///< Internal Iterative Deepening attempts (atomic for thread-safety)
     
     double branching_factor = 0.0;         ///< Average branching factor
     double time_elapsed_ms = 0.0;          ///< Total search time in milliseconds
@@ -83,6 +86,9 @@ struct SearchStats {
         , check_extensions(other.check_extensions.load())
         , singular_extensions(other.singular_extensions.load())
         , recapture_extensions(other.recapture_extensions.load())
+        , passed_pawn_extensions(other.passed_pawn_extensions.load())
+        , mate_threat_extensions(other.mate_threat_extensions.load())
+        , iid_attempts(other.iid_attempts.load())
         , branching_factor(other.branching_factor)
         , time_elapsed_ms(other.time_elapsed_ms)
         , nodes_per_second(other.nodes_per_second) {}
@@ -104,6 +110,9 @@ struct SearchStats {
             check_extensions.store(other.check_extensions.load());
             singular_extensions.store(other.singular_extensions.load());
             recapture_extensions.store(other.recapture_extensions.load());
+            passed_pawn_extensions.store(other.passed_pawn_extensions.load());
+            mate_threat_extensions.store(other.mate_threat_extensions.load());
+            iid_attempts.store(other.iid_attempts.load());
             branching_factor = other.branching_factor;
             time_elapsed_ms = other.time_elapsed_ms;
             nodes_per_second = other.nodes_per_second;
@@ -127,6 +136,9 @@ struct SearchStats {
         check_extensions.store(0);
         singular_extensions.store(0);
         recapture_extensions.store(0);
+        passed_pawn_extensions.store(0);
+        mate_threat_extensions.store(0);
+        iid_attempts.store(0);
         branching_factor = 0.0;
         time_elapsed_ms = 0.0;
         nodes_per_second = 0.0;
@@ -497,7 +509,14 @@ struct SearchConfig {
     bool enable_check_extensions = true;   ///< Enable check extensions
     bool enable_singular_extensions = true; ///< Enable singular extensions
     bool enable_recapture_extensions = true; ///< Enable recapture extensions
+    bool enable_passed_pawn_extensions = true; ///< Enable passed pawn extensions
+    bool enable_mate_threat_extensions = false; ///< Enable mate threat extensions (VERY EXPENSIVE - disabled by default)
     int max_extensions_per_path = 16;      ///< Maximum extensions per search path
+    
+    // Internal Iterative Deepening
+    bool enable_iid = true;                ///< Enable Internal Iterative Deepening
+    int iid_min_depth = 5;                 ///< Minimum depth for IID
+    int iid_reduction = 2;                 ///< Depth reduction for IID search
     
     // Pruning techniques
     bool enable_null_move_pruning = true;  ///< Enable null move pruning
@@ -790,6 +809,25 @@ private:
      * @return Extension amount (in plies)
      */
     int calculate_extensions(const Board& board, const Move& move, int ply, int extensions_used);
+    
+    /**
+     * @brief Perform Internal Iterative Deepening to find a good move
+     * @param board Current position
+     * @param depth Current depth
+     * @param alpha Alpha bound
+     * @param beta Beta bound
+     * @param ply Current ply
+     * @return Best move found via IID
+     */
+    Move internal_iterative_deepening(Board& board, int depth, int alpha, int beta, int ply);
+    
+    /**
+     * @brief Check if position has mate threat (opponent threatens mate)
+     * @param board Current position
+     * @param ply Current ply depth
+     * @return true if mate threat detected
+     */
+    bool has_mate_threat(Board& board, int ply);
     
     /**
      * @brief Calculate late move reduction

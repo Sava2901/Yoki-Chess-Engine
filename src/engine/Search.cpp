@@ -443,6 +443,25 @@ int Search::alpha_beta(Board& board, int depth, int alpha, int beta, int ply, st
     int static_eval = in_check ? -MATE_SCORE : evaluator->evaluate(board);
     bool is_pv = (beta - alpha > 1); // PV node if window is wider than 1
     
+    // Internal Iterative Deepening (IID) - when no hash move is available
+    // Do a shallow search to find a good move for ordering
+    // IID is valuable but expensive - use it very selectively:
+    // 1. Only at PV nodes (most important for move ordering)
+    // 2. Only at shallow plies (near root where it matters most)
+    // 3. Only at sufficient depth where the cost is justified
+    bool should_do_iid = config.enable_iid && !tt_hit && !in_check && is_pv &&
+                         ply < 4 &&                                              // Only near root (ply 0-3)
+                         depth >= config.iid_min_depth;                          // Sufficient depth
+    
+    if (should_do_iid) {
+        tt_move = internal_iterative_deepening(board, depth, alpha, beta, ply);
+        if (tt_move.is_valid()) {
+            current_stats.iid_attempts++;
+            // Re-order moves with the newly found IID move
+            order_moves(board, moves, ply, tt_move);
+        }
+    }
+    
     // Reverse Futility Pruning (Static Null Move Pruning)
     // If our position is so good that even a null move would beat beta, prune
     if (depth <= 7 && !in_check && abs(beta) < MATE_SCORE - 100 && !is_pv) {
@@ -495,6 +514,51 @@ int Search::alpha_beta(Board& board, int depth, int alpha, int beta, int ply, st
     bool found_pv = false;
     int move_count = 0;
     
+    // Singular extension check - verify if TT move is singularly better
+    // This is done BEFORE the main loop to determine if we should extend the TT move
+    int singular_extension = 0;
+    if (config.enable_singular_extensions && tt_hit && tt_move.is_valid() && 
+        depth >= 8 && !in_check && abs(static_eval) < MATE_SCORE - 100) {
+        
+        // Get TT move's expected value (from TT entry)
+        int tt_value = static_eval; // Use static eval as baseline
+        int singular_beta = tt_value - depth * 2; // Margin for singularity
+        
+        // Search all moves except TT move with reduced depth and narrow window
+        int singular_depth = std::max(1, depth / 2 - 1);
+        int max_score = -MATE_SCORE;
+        bool found_alternative = false;
+        
+        for (const MoveScore& move_score : moves) {
+            if (should_stop()) break;
+            
+            const Move& move = move_score.move;
+            // Skip the TT move itself
+            if (move == tt_move) continue;
+            
+            BitboardMoveUndoData undo = board.apply_move(move);
+            std::vector<Move> temp_pv;
+            int score = -alpha_beta(board, singular_depth, -singular_beta - 1, -singular_beta, ply + 1, temp_pv);
+            board.undo_move(undo);
+            
+            if (score > max_score) {
+                max_score = score;
+            }
+            
+            // If any other move is close to or better than singular_beta, TT move is not singular
+            if (score >= singular_beta) {
+                found_alternative = true;
+                break;
+            }
+        }
+        
+        // If no alternative move beat singular_beta, the TT move is singular - extend it
+        if (!found_alternative && max_score < singular_beta) {
+            singular_extension = 1;
+            current_stats.singular_extensions++;
+        }
+    }
+    
     // YBWC: Check if we should use parallel splitting for remaining moves
     // Criteria: depth >= min_split_depth, multiple threads available, not too many active splits
     bool can_split_ybwc = config.enable_parallel_search && 
@@ -529,9 +593,16 @@ int Search::alpha_beta(Board& board, int depth, int alpha, int beta, int ply, st
         
         // Calculate extensions
         int extensions = 0;
-        if (config.enable_check_extensions || config.enable_singular_extensions || config.enable_recapture_extensions) {
+        if (config.enable_check_extensions || config.enable_singular_extensions || 
+            config.enable_recapture_extensions || config.enable_passed_pawn_extensions ||
+            config.enable_mate_threat_extensions) {
             if (ply < MAX_PLY - 10) {
                 extensions = calculate_extensions(board, move, ply, 0);
+                
+                // Add singular extension if this is the TT move
+                if (move == tt_move && singular_extension > 0) {
+                    extensions += singular_extension;
+                }
             }
         }
         
@@ -1216,19 +1287,124 @@ int Search::calculate_extensions(const Board& board, const Move& move, int ply, 
     
     int extension = 0;
     
-    // Check extension
+    // Check extension - highest priority
     if (config.enable_check_extensions && move_gen->is_in_check(board, board.get_active_color())) {
         extension = 1;
         current_stats.check_extensions++;
+        return extension; // Return immediately to avoid multiple extensions
     }
-    // Recapture extension
-    else if (config.enable_recapture_extensions && move.is_capture() && ply > 0) {
-        // Simple recapture detection - same target square as previous move
-        extension = 1;
-        current_stats.recapture_extensions++;
+    
+    // Passed pawn extensions - push to 6th or 7th rank
+    if (config.enable_passed_pawn_extensions && !move.is_capture()) {
+        char piece = move.piece;
+        bool is_pawn = (piece == 'P' || piece == 'p');
+        
+        if (is_pawn) {
+            // Check if it's an advanced passed pawn push
+            bool is_white_pawn = (piece == 'P');
+            int target_rank = move.to_rank;
+            
+            // White pawns advancing to 6th rank (rank 5 in 0-indexed) or 7th rank (rank 6)
+            // Black pawns advancing to 3rd rank (rank 2 in 0-indexed) or 2nd rank (rank 1)
+            bool is_advanced = (is_white_pawn && (target_rank == 5 || target_rank == 6)) ||
+                             (!is_white_pawn && (target_rank == 2 || target_rank == 1));
+            
+            if (is_advanced) {
+                int square = target_rank * 8 + move.to_file;
+                Board::Color color = is_white_pawn ? Board::WHITE : Board::BLACK;
+                
+                // Check if it's actually a passed pawn
+                if (evaluator->is_passed_pawn(board, square, color)) {
+                    extension = 1;
+                    current_stats.passed_pawn_extensions++;
+                    return extension;
+                }
+            }
+        }
+    }
+    
+    // Recapture extension - improved to check same square
+    if (config.enable_recapture_extensions && move.is_capture() && ply > 0) {
+        Move prev_move = previous_moves[ply - 1];
+        // Check if we're recapturing on the same square
+        if (prev_move.to_rank == move.to_rank && prev_move.to_file == move.to_file) {
+            extension = 1;
+            current_stats.recapture_extensions++;
+            return extension;
+        }
+    }
+    
+    // Mate threat extension - detect if opponent threatens mate
+    // Only check at reasonable depths to avoid overhead and stack issues
+    // Only check in middle game/endgame positions where mate threats are more common
+    if (config.enable_mate_threat_extensions && ply > 0 && ply < 8 && 
+        !move.is_capture() && extensions_used == 0) {
+        
+        // Don't check if we're currently in check (focus on opponent's threats)
+        bool we_are_in_check = move_gen->is_in_check(board, board.get_active_color());
+        if (!we_are_in_check) {
+            // Quick material check - only worth checking in non-opening positions
+            int material = evaluator->evaluate_material(board);
+            if (material < 5000) { // Simplified position where mates are more likely
+                if (has_mate_threat(const_cast<Board&>(board), ply)) {
+                    extension = 1;
+                    current_stats.mate_threat_extensions++;
+                    return extension;
+                }
+            }
+        }
     }
     
     return extension;
+}
+
+Move Search::internal_iterative_deepening(Board& board, int depth, int alpha, int beta, int ply) {
+    // Calculate reduced depth for IID search
+    // Use aggressive reduction to keep IID fast - we only need a rough move ordering hint
+    int iid_depth = depth - config.iid_reduction;
+    
+    // Ensure the IID search won't trigger IID recursively
+    // IID triggers at depth >= iid_min_depth for PV nodes
+    // So we need iid_depth < iid_min_depth to prevent recursion
+    if (iid_depth >= config.iid_min_depth) {
+        // Reduce further to prevent recursive IID
+        iid_depth = config.iid_min_depth - 1;
+    }
+    
+    // Safety check: don't search at depth < 1
+    if (iid_depth < 1) {
+        return Move(); // Too shallow, don't bother with IID
+    }
+    
+    std::vector<Move> iid_pv;
+    alpha_beta(board, iid_depth, alpha, beta, ply, iid_pv);
+    
+    if (!iid_pv.empty()) {
+        return iid_pv[0];
+    }
+    
+    return Move();
+}
+
+bool Search::has_mate_threat(Board& board, int ply) {
+    // Safety check: don't recurse too deep to avoid stack overflow
+    if (ply >= MAX_PLY - 6) {
+        return false;
+    }
+    
+    // Do a null move to give opponent the move
+    Board null_board = board;
+    Board::Color opponent = (board.get_active_color() == Board::WHITE) ? Board::BLACK : Board::WHITE;
+    null_board.set_active_color(opponent);
+    
+    // Check if opponent threatens checkmate with a very shallow search
+    // Use depth 1 with quiescence to be more efficient while still detecting direct threats
+    std::vector<Move> threat_pv;
+    int threat_score = alpha_beta(null_board, 1, -MATE_SCORE, MATE_SCORE, ply + 1, threat_pv);
+    
+    // If opponent's score indicates imminent mate (within 10 plies), we have a mate threat
+    // More conservative threshold to avoid false positives
+    return threat_score > MATE_SCORE - 20;
 }
 
 int Search::calculate_lmr_reduction(int depth, int move_count, const Move& move, bool is_pv_node) {

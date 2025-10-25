@@ -350,6 +350,15 @@ public:
     int evaluate_king_position_safety(const Board& board, Board::Color color) const;
     
     /**
+     * @brief Checks if a pawn is a passed pawn
+     * @param board The board position to check
+     * @param square The pawn's square
+     * @param color The pawn's color
+     * @return True if the pawn is passed
+     */
+    bool is_passed_pawn(const Board& board, int square, Board::Color color) const;
+    
+    /**
      * @brief Evaluates pawn storms directed at the king
      * @param board The board position to evaluate
      * @param color The color of the king to evaluate
@@ -780,15 +789,6 @@ private:
      * @return Mirrored square index
      */
     static int mirror_square(int square) { return square ^ 56; }
-    
-    /**
-     * @brief Checks if a pawn is a passed pawn
-     * @param board The board position to check
-     * @param square The pawn's square
-     * @param color The pawn's color
-     * @return True if the pawn is passed
-     */
-    bool is_passed_pawn(const Board& board, int square, Board::Color color) const;
     
     /**
      * @brief Checks if a pawn is isolated (no friendly pawns on adjacent files)
