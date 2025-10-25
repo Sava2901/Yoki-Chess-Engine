@@ -579,7 +579,7 @@ int Evaluation::evaluate_material(const Board& board) const {
         for (int piece_type = 0; piece_type < 6; ++piece_type) {
             Bitboard pieces = board.get_piece_bitboard(static_cast<Board::PieceType>(piece_type), 
                                                       static_cast<Board::Color>(color));
-            int piece_count = count_bits(pieces);
+            int piece_count = BitboardUtils::popcount(pieces);
             score += side_multiplier * piece_count * MATERIAL_VALUES[piece_type];
         }
     }
@@ -679,7 +679,7 @@ int Evaluation::evaluate_pawn_structure_for_color(const Board& board, Board::Col
     uint64_t pawn_bits = pawns;
 
     while (pawn_bits) {
-        int square = get_lsb(pawn_bits);
+        int square = BitboardUtils::lsb(pawn_bits);
         pawn_bits &= pawn_bits - 1; // Clear lowest set bit
 
         int rank = square >> 3;
@@ -1605,7 +1605,7 @@ int Evaluation::evaluate_mobility_for_color(const Board& board, Board::Color col
         uint64_t piece_bits = pieces;
 
         while (piece_bits) {
-            int square = get_lsb(piece_bits);
+            int square = BitboardUtils::lsb(piece_bits);
             piece_bits &= piece_bits - 1;
 
             Bitboard attacks = 0;
@@ -1627,7 +1627,7 @@ int Evaluation::evaluate_mobility_for_color(const Board& board, Board::Color col
             }
 
             attacks &= ~own_pieces;
-            int mobility = count_bits(attacks);
+            int mobility = BitboardUtils::popcount(attacks);
             score += mobility * MOBILITY_BONUSES[piece_type];
         }
     }
@@ -1652,7 +1652,7 @@ int Evaluation::evaluate_piece_coordination_for_color(const Board& board, Board:
     int rook_count = 0;
 
     while (rook_bits) {
-        int square = get_lsb(rook_bits);
+        int square = BitboardUtils::lsb(rook_bits);
         rook_squares[rook_count++] = square;
         rook_bits &= rook_bits - 1;
     }
@@ -1676,7 +1676,7 @@ int Evaluation::evaluate_piece_coordination_for_color(const Board& board, Board:
     
     // Bishop pair bonus
     Bitboard bishops = board.get_piece_bitboard(Board::BISHOP, color);
-    if (count_bits(bishops) >= 2) {
+    if (BitboardUtils::popcount(bishops) >= 2) {
         score += EvalConstants::BISHOP_PAIR_BONUS;
     }
     
@@ -1688,7 +1688,7 @@ int Evaluation::evaluate_piece_coordination_for_color(const Board& board, Board:
     const bool white = (color == Board::WHITE);
 
     while (knight_bits) {
-        int sq = get_lsb(knight_bits);
+        int sq = BitboardUtils::lsb(knight_bits);
         knight_bits &= knight_bits - 1;
 
         int rank = sq >> 3;
@@ -1734,7 +1734,7 @@ int Evaluation::evaluate_endgame_factors_for_color(const Board& board, Board::Co
     Bitboard enemy_pawns = board.get_piece_bitboard(Board::PAWN, enemy_color);
     uint64_t enemy_pawn_bits = enemy_pawns;
     while (enemy_pawn_bits) {
-        int pawn_square = get_lsb(enemy_pawn_bits);
+        int pawn_square = BitboardUtils::lsb(enemy_pawn_bits);
         enemy_pawn_bits &= enemy_pawn_bits - 1;
         
         int distance = distance_between_squares(king_square, pawn_square);
@@ -1747,7 +1747,7 @@ int Evaluation::evaluate_endgame_factors_for_color(const Board& board, Board::Co
     Bitboard pawns = board.get_piece_bitboard(Board::PAWN, color);
     uint64_t pawn_bits = pawns;
     while (pawn_bits) {
-        int square = get_lsb(pawn_bits);
+        int square = BitboardUtils::lsb(pawn_bits);
         pawn_bits &= pawn_bits - 1;
         
         // Connected passed pawns bonus
@@ -1760,7 +1760,7 @@ int Evaluation::evaluate_endgame_factors_for_color(const Board& board, Board::Co
                 Bitboard file_pawns = pawns & get_file_mask(adj_file);
                 uint64_t file_pawn_bits = file_pawns;
                 while (file_pawn_bits) {
-                    int adj_square = get_lsb(file_pawn_bits);
+                    int adj_square = BitboardUtils::lsb(file_pawn_bits);
                     file_pawn_bits &= file_pawn_bits - 1;
 
                     if (is_passed_pawn(board, adj_square, color)) {
@@ -1939,7 +1939,7 @@ int Evaluation::get_phase_value(const Board& board) const {
         for (int piece_type = 1; piece_type < 5; ++piece_type) { // Skip pawns and king
             Bitboard pieces = board.get_piece_bitboard(static_cast<Board::PieceType>(piece_type), 
                                                       static_cast<Board::Color>(color));
-            int piece_count = count_bits(pieces);
+            int piece_count = BitboardUtils::popcount(pieces);
             phase_value += piece_count * PHASE_VALUES[piece_type];
         }
     }
@@ -2109,7 +2109,7 @@ int Evaluation::count_attackers_to_king_zone(const Board& board, Board::Color at
     Bitboard king = board.get_piece_bitboard(Board::KING, king_color);
     if (!king) return 0;
     
-    int king_square = get_lsb(king);
+    int king_square = BitboardUtils::lsb(king);
     if (king_square < 0 || king_square >= 64) return 0;
     
     int attackers = 0;
@@ -2120,7 +2120,7 @@ int Evaluation::count_attackers_to_king_zone(const Board& board, Board::Color at
         uint64_t piece_bits = pieces;
         
         while (piece_bits) {
-            int square = get_lsb(piece_bits);
+            int square = BitboardUtils::lsb(piece_bits);
             piece_bits &= piece_bits - 1;
             
             if (is_in_king_zone(square, king_square)) {

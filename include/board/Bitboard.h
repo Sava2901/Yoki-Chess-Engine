@@ -4,27 +4,50 @@
 #include <cstdint>
 #include <array>
 #include <string>
-#include <immintrin.h>  // For BMI2 and POPCNT intrinsics
-// TODO: Check the functions for each technology
+#include <algorithm>
+#include <cassert>
+#include <cstring>
+#include <iostream>
+
+// Architecture detection
+#if defined(_WIN64) || defined(__x86_64__) || defined(__ppc64__)
+    constexpr bool Is64Bit = true;
+#else
+    constexpr bool Is64Bit = false;
+#endif
+
+// Compiler and instruction set detection
+#if defined(__GNUC__) || defined(__clang__)
+    #define COMPILER_GCC_COMPATIBLE
+#elif defined(_MSC_VER)
+    #define COMPILER_MSVC
+    #include <intrin.h>
+#endif
+
+// PEXT instruction availability
+#if defined(__BMI2__) || (defined(_MSC_VER) && defined(__AVX2__))
+    #define USE_PEXT
+    #if defined(_MSC_VER)
+        #include <immintrin.h>
+        #define pext(a, b) _pext_u64(a, b)
+    #else
+        #include <x86intrin.h>
+        #define pext(a, b) __builtin_ia32_pext_di(a, b)
+    #endif
+    constexpr bool HasPext = true;
+#else
+    constexpr bool HasPext = false;
+#endif
+
+// POPCNT instruction availability
+#if defined(__POPCNT__) || (defined(_MSC_VER) && defined(__AVX__))
+    #define USE_POPCNT
+    #if defined(_MSC_VER)
+        #include <immintrin.h>
+    #endif
+#endif
 
 using Bitboard = uint64_t;
-
-// Faster bitboard operations using compiler intrinsics
-#ifdef __BMI2__
-    #define pop_lsb(bb) _blsr_u64(bb)
-#endif
-
-#ifdef __POPCNT__
-    #define count_bits(bb) _mm_popcnt_u64(bb)
-#else
-    #define count_bits(bb) __builtin_popcountll(bb)
-#endif
-
-#ifdef __BMI__
-    #define get_lsb(bb) _tzcnt_u64(bb)
-#else
-    #define get_lsb(bb) __builtin_ctzll(bb)
-#endif
 
 // Bitboard constants
 constexpr Bitboard EMPTY_BOARD = 0ULL;
@@ -118,7 +141,15 @@ public:
      * @return The number of set bits (0-64)
      */
     static int popcount(Bitboard bb) {
-        return count_bits(bb);
+#ifndef USE_POPCNT
+        std::uint16_t indices[4];
+        std::memcpy(indices, &bb, sizeof(bb));
+        return PopCnt16[indices[0]] + PopCnt16[indices[1]] + PopCnt16[indices[2]] + PopCnt16[indices[3]];
+#elif defined(COMPILER_MSVC)
+        return int(_mm_popcnt_u64(bb));
+#else  // GCC or compatible compiler
+        return __builtin_popcountll(bb);
+#endif
     }
     
     /**
@@ -128,7 +159,27 @@ public:
      * @return The square index (0-63) of the least significant bit
      */
     static int lsb(Bitboard bb) {
-        return get_lsb(bb);
+        assert(bb);
+#if defined(COMPILER_GCC_COMPATIBLE)  // GCC, Clang, ICX
+        return __builtin_ctzll(bb);
+#elif defined(COMPILER_MSVC)
+    #ifdef _WIN64  // MSVC, WIN64
+        unsigned long idx;
+        _BitScanForward64(&idx, bb);
+        return int(idx);
+    #else  // MSVC, WIN32
+        unsigned long idx;
+        if (bb & 0xffffffff) {
+            _BitScanForward(&idx, int32_t(bb));
+            return int(idx);
+        } else {
+            _BitScanForward(&idx, int32_t(bb >> 32));
+            return int(idx + 32);
+        }
+    #endif
+#else  // Compiler is neither GCC nor MSVC compatible
+    #error "Compiler not supported."
+#endif
     }
     
     /**
@@ -137,7 +188,27 @@ public:
      * @return The square index (0-63) of the most significant bit
      */
     static int msb(Bitboard bb) {
-        return 63 - __builtin_clzll(bb);
+        assert(bb);
+#if defined(COMPILER_GCC_COMPATIBLE)  // GCC, Clang, ICX
+        return 63 ^ __builtin_clzll(bb);
+#elif defined(COMPILER_MSVC)
+    #ifdef _WIN64  // MSVC, WIN64
+        unsigned long idx;
+        _BitScanReverse64(&idx, bb);
+        return int(idx);
+    #else  // MSVC, WIN32
+        unsigned long idx;
+        if (bb >> 32) {
+            _BitScanReverse(&idx, int32_t(bb >> 32));
+            return int(idx + 32);
+        } else {
+            _BitScanReverse(&idx, int32_t(bb));
+            return int(idx);
+        }
+    #endif
+#else  // Compiler is neither GCC nor MSVC compatible
+    #error "Compiler not supported."
+#endif
     }
     
     /**
@@ -146,16 +217,22 @@ public:
      * @param bb Reference to the bitboard to modify
      * @return The square index (0-63) of the removed bit
      */
-    static Bitboard pop_lsb(Bitboard& bb) {
-#ifdef __BMI2__
-        int square = get_lsb(bb);
-        bb = _blsr_u64(bb);
-        return square;
-#else
-        int square = lsb(bb);
+    static int pop_lsb(Bitboard& bb) {
+        assert(bb);
+        const int s = lsb(bb);
         bb &= bb - 1;
-        return square;
-#endif
+        return s;
+    }
+    
+    /**
+     * Returns the bitboard of the least significant square of a non-zero bitboard.
+     * It is equivalent to square_bb(lsb(bb)).
+     * @param bb The bitboard to search (must not be zero)
+     * @return Bitboard with only the least significant bit set
+     */
+    static Bitboard least_significant_square_bb(Bitboard bb) {
+        assert(bb);
+        return bb & -bb;
     }
     
     // ========== Coordinate Conversion Functions ==========
@@ -187,6 +264,38 @@ public:
     static int get_file(int square) {
         return square % 8;
     }
+    
+    // ========== Magic Bitboard Structure ==========
+    
+    /**
+     * Magic holds all magic bitboards relevant data for a single square
+     */
+    struct Magic {
+        Bitboard  mask;
+        Bitboard* attacks;
+#ifndef USE_PEXT
+        Bitboard magic;
+        unsigned shift;
+#endif
+
+        // Compute the attack's index using the 'magic bitboards' approach
+        unsigned index(Bitboard occupied) const {
+#ifdef USE_PEXT
+            return unsigned(pext(occupied, mask));
+#else
+            if (Is64Bit)
+                return unsigned(((occupied & mask) * magic) >> shift);
+
+            unsigned lo = unsigned(occupied) & unsigned(mask);
+            unsigned hi = unsigned(occupied >> 32) & unsigned(mask >> 32);
+            return (lo * unsigned(magic) ^ hi * unsigned(magic >> 32)) >> shift;
+#endif
+        }
+
+        Bitboard attacks_bb(Bitboard occupied) const { 
+            return attacks[index(occupied)]; 
+        }
+    };
     
     // ========== Attack Generation Functions ==========
     
@@ -283,7 +392,7 @@ public:
      * @param bb The bitboard to search (must not be zero)
      * @return The square index (0-63) of the least significant bit
      */
-    static int get_lsb_index(Bitboard bb) { return get_lsb(bb); }
+    static int get_lsb_index(Bitboard bb) { return lsb(bb); }
     
     // ========== Magic Bitboard Data Accessors ==========
     
@@ -344,7 +453,8 @@ public:
     static Bitboard get_bishop_mask(int square) { return bishop_mask(square); }
     
 private:
-    // Magic bitboard tables
+    // ========== Magic Bitboard Data ==========
+    static Magic Magics[64][2];  // [square][piece_type - BISHOP]
     static std::array<Bitboard, 64> rook_magics;
     static std::array<Bitboard, 64> bishop_magics;
     static std::array<int, 64> rook_shifts;
@@ -357,6 +467,10 @@ private:
     static std::array<Bitboard, 64> king_attacks_table;
     static std::array<Bitboard, 64> white_pawn_attacks_table;
     static std::array<Bitboard, 64> black_pawn_attacks_table;
+    
+    // ========== Lookup Tables ==========
+    static uint8_t PopCnt16[1 << 16];
+    static uint8_t SquareDistance[64][64];
     
     // Mask generation
     static Bitboard rook_mask(int square);

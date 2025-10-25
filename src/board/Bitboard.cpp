@@ -2,14 +2,11 @@
 #include <iostream>
 #include <iomanip>
 #include <random>
-#ifdef __BMI2__
-#include <immintrin.h>
-#define USE_PEXT 1
-#else
-#define USE_PEXT 0
-#endif
+#include <bitset>
+#include <initializer_list>
 
 // Static member initialization
+BitboardUtils::Magic BitboardUtils::Magics[64][2];
 std::array<Bitboard, 64> BitboardUtils::rook_magics;
 std::array<Bitboard, 64> BitboardUtils::bishop_magics;
 std::array<int, 64> BitboardUtils::rook_shifts;
@@ -20,6 +17,8 @@ std::array<Bitboard, 64> BitboardUtils::knight_attacks_table;
 std::array<Bitboard, 64> BitboardUtils::king_attacks_table;
 std::array<Bitboard, 64> BitboardUtils::white_pawn_attacks_table;
 std::array<Bitboard, 64> BitboardUtils::black_pawn_attacks_table;
+uint8_t BitboardUtils::PopCnt16[1 << 16];
+uint8_t BitboardUtils::SquareDistance[64][64];
 bool BitboardUtils::is_initialized = false;
 
 // Magic numbers for rook attacks (pre-computed)
@@ -45,21 +44,21 @@ static constexpr std::array<Bitboard, 64> ROOK_MAGICS = {
 // Magic numbers for bishop attacks (from Stockfish)
 static constexpr std::array<Bitboard, 64> BISHOP_MAGICS = {
     0x89a1121896040240ULL, 0x2004844802002010ULL, 0x2068080051921000ULL, 0x62880a0220200808ULL,
-    0x4042004402810011ULL, 0x100822020200011ULL, 0xc00444222012000aULL, 0x28808801216001ULL,
-    0x400492088408100ULL, 0x201c401040c0084ULL, 0x840800910a0010ULL, 0x82080240060ULL,
+    0x4042004402810011ULL, 0x100822020200011ULL,  0xc00444222012000aULL, 0x28808801216001ULL,
+    0x400492088408100ULL,  0x201c401040c0084ULL,  0x840800910a0010ULL,   0x82080240060ULL,
     0x2000840504006000ULL, 0x30010c4108405004ULL, 0x1008005410080802ULL, 0x8144042209100900ULL,
-    0x208081020014400ULL, 0x4800201208ca00ULL, 0xf18140408012008ULL, 0x1004002802102001ULL,
-    0x841000820080811ULL, 0x40200200a42008ULL, 0x800054042000ULL, 0x88010400410c9000ULL,
-    0x520040470104290ULL, 0x1004040051500081ULL, 0x2002081833080021ULL, 0x400c00c010142ULL,
-    0x941408200c002000ULL, 0x658810000806011ULL, 0x188071040440a00ULL, 0x4800404002011c00ULL,
-    0x104442040404200ULL, 0x511080202091021ULL, 0x4022401120400ULL, 0x80c0040400080120ULL,
-    0x8040010040820802ULL, 0x480810700020090ULL, 0x102008e00040242ULL, 0x809005202050100ULL,
-    0x8002024220104080ULL, 0x431008804142000ULL, 0x19001802081400ULL, 0x200014208040080ULL,
-    0x3308082008200100ULL, 0x41010500040c020ULL, 0x4012020c04210308ULL, 0x208220a202004080ULL,
-    0x111040120082000ULL, 0x6803040141280a00ULL, 0x2101004202410000ULL, 0x8200000041108022ULL,
-    0x21082088000ULL, 0x2410204010040ULL, 0x40100400809000ULL, 0x822088220820214ULL,
-    0x40808090012004ULL, 0x910224040218c9ULL, 0x402814422015008ULL, 0x90014004842410ULL,
-    0x1000042304105ULL, 0x10008830412a00ULL, 0x2520081090008908ULL, 0x40102000a0a60140ULL
+    0x208081020014400ULL,  0x4800201208ca00ULL,   0xf18140408012008ULL,  0x1004002802102001ULL,
+    0x841000820080811ULL,  0x40200200a42008ULL,   0x800054042000ULL,     0x88010400410c9000ULL,
+    0x520040470104290ULL,  0x1004040051500081ULL, 0x2002081833080021ULL, 0x400c00c010142ULL,
+    0x941408200c002000ULL, 0x658810000806011ULL,  0x188071040440a00ULL,  0x4800404002011c00ULL,
+    0x104442040404200ULL,  0x511080202091021ULL,  0x4022401120400ULL,    0x80c0040400080120ULL,
+    0x8040010040820802ULL, 0x480810700020090ULL,  0x102008e00040242ULL,  0x809005202050100ULL,
+    0x8002024220104080ULL, 0x431008804142000ULL,  0x19001802081400ULL,   0x200014208040080ULL,
+    0x3308082008200100ULL, 0x41010500040c020ULL,  0x4012020c04210308ULL, 0x208220a202004080ULL,
+    0x111040120082000ULL,  0x6803040141280a00ULL, 0x2101004202410000ULL, 0x8200000041108022ULL,
+    0x21082088000ULL,      0x2410204010040ULL,    0x40100400809000ULL,   0x822088220820214ULL,
+    0x40808090012004ULL,   0x910224040218c9ULL,   0x402814422015008ULL,  0x90014004842410ULL,
+    0x1000042304105ULL,    0x10008830412a00ULL,   0x2520081090008908ULL, 0x40102000a0a60140ULL
 };
 
 // Shift values for magic bitboards
@@ -85,12 +84,24 @@ static const std::array<int, 64> BISHOP_SHIFTS = {
     58, 59, 59, 59, 59, 59, 59, 58
 };
 
-// Attack tables storage
-static Bitboard rook_table[102400];
-static Bitboard bishop_table[5248];
+// Attack tables storage - aligned for better cache performance
+alignas(64) static Bitboard rook_table[102400];
+alignas(64) static Bitboard bishop_table[5248];
 
 void BitboardUtils::init() {
     if (is_initialized) return;
+    
+    // Initialize PopCnt16 lookup table
+    for (unsigned i = 0; i < (1 << 16); ++i)
+        PopCnt16[i] = uint8_t(std::bitset<16>(i).count());
+    
+    // Initialize SquareDistance lookup table
+    for (int s1 = 0; s1 < 64; ++s1)
+        for (int s2 = 0; s2 < 64; ++s2) {
+            int file_dist = std::abs(get_file(s1) - get_file(s2));
+            int rank_dist = std::abs(get_rank(s1) - get_rank(s2));
+            SquareDistance[s1][s2] = std::max(file_dist, rank_dist);
+        }
     
     // Copy pre-computed magic numbers
     rook_magics = ROOK_MAGICS;
@@ -350,39 +361,32 @@ Bitboard BitboardUtils::generate_bishop_attacks_slow(int square, Bitboard occupa
 }
 
 Bitboard BitboardUtils::rook_attacks(int square, Bitboard occupancy) {
-#ifdef __BMI2__
-    if (USE_PEXT) {
+#ifdef USE_PEXT
+    if (HasPext) {
         return rook_attacks_pext(square, occupancy);
     }
 #endif
-    occupancy &= rook_mask(square);
-    int magic_index = (occupancy * rook_magics[square]) >> rook_shifts[square];
-    return rook_attacks_table[square][magic_index];
+    Bitboard key = (occupancy & rook_mask(square)) * rook_magics[square] >> rook_shifts[square];
+    return rook_attacks_table[square][key];
 }
 
 Bitboard BitboardUtils::bishop_attacks(int square, Bitboard occupancy) {
-#ifdef __BMI2__
-    if (USE_PEXT) {
+#ifdef USE_PEXT
+    if (HasPext) {
         return bishop_attacks_pext(square, occupancy);
     }
 #endif
-    occupancy &= bishop_mask(square);
-    int magic_index = (occupancy * bishop_magics[square]) >> bishop_shifts[square];
-    return bishop_attacks_table[square][magic_index];
+    Bitboard key = (occupancy & bishop_mask(square)) * bishop_magics[square] >> bishop_shifts[square];
+    return bishop_attacks_table[square][key];
 }
 
-#ifdef __BMI2__
-// PEXT bitboard implementations for BMI2 processors
+#ifdef USE_PEXT
 Bitboard BitboardUtils::rook_attacks_pext(int square, Bitboard occupancy) {
-    Bitboard mask = rook_mask(square);
-    occupancy = _pext_u64(occupancy, mask);
-    return rook_attacks_table[square][occupancy];
+    return rook_attacks_table[square][pext(occupancy, rook_mask(square))];
 }
 
 Bitboard BitboardUtils::bishop_attacks_pext(int square, Bitboard occupancy) {
-    Bitboard mask = bishop_mask(square);
-    occupancy = _pext_u64(occupancy, mask);
-    return bishop_attacks_table[square][occupancy];
+    return bishop_attacks_table[square][pext(occupancy, bishop_mask(square))];
 }
 #endif
 
