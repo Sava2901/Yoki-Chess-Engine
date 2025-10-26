@@ -334,21 +334,6 @@ inline bool aligned(int sq1, int sq2, int sq3) {
 // ========== Bitboard Utilities Namespace ==========
 
 namespace BitboardUtils {
-
-/**
- * Initialize magic bitboard tables and precomputed attack tables.
- * Must be called once before using any attack generation functions.
- */
-void init();
-
-/**
- * Initialize magic bitboard structures for sliding pieces.
- * @param pt Piece type (BISHOP or ROOK)
- * @param table Attack table storage
- * @param magics Reference to Magic array for storing results
- */
-void init_magics(PieceType pt, Bitboard table[], Magic magics[][2]);
-
 /**
  * Convert a bitboard to a human-readable string representation.
  * @param bb The bitboard to convert
@@ -363,6 +348,14 @@ std::string bitboard_to_string(Bitboard bb);
 void print_bitboard(Bitboard bb);
 
 // Helper functions for initialization (used internally)
+
+/**
+ * Initialize magic bitboard structures for sliding pieces.
+ * @param pt Piece type (BISHOP or ROOK)
+ * @param table Attack table storage
+ * @param magics Reference to Magic array for storing results
+ */
+void init_magics(PieceType pt, Bitboard table[], Magic magics[][2]);
 void init_rook_attacks();
 void init_bishop_attacks();
 void init_knight_attacks();
